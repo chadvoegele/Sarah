@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
-from bridge.core import Store, Conflict, Denied, validate_audio, BlockedHermes
+from bridge.core import Store, Conflict, Denied, validate_audio, UnconfiguredRuntime
 
 class SecurityTests(unittest.TestCase):
     def setUp(self):
@@ -70,7 +70,7 @@ class SecurityTests(unittest.TestCase):
         self.s.finish('device-a',one,'error','blocked')
         with self.assertRaises(Denied):self.s.offer('device-a',one,{'tool':'anything'},now=100)
     def test_capability_fail_closed(self):
-        adapter=BlockedHermes()
+        adapter=UnconfiguredRuntime()
         self.assertFalse(adapter.ready)
         with self.assertRaises(Denied):adapter.submit('anything')
     def test_wav_validation(self):

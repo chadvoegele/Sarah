@@ -1,4 +1,4 @@
-"""Offline production-runtime regressions. Synthetic pool, transport, and children only."""
+"""Offline production-runtime regressions. Synthetic configuration, transport and children."""
 import asyncio
 import inspect
 import io
@@ -11,7 +11,6 @@ import unittest
 import wave
 from contextlib import ExitStack
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -22,8 +21,19 @@ from bridge.runtime import VoiceRuntime
 from bridge.server import make_app
 
 
-DONE = (b'data: {"type":"response.output_text.delta","delta":"hello"}\n\n'
-        b'data: {"type":"response.completed"}\n\n')
+def text_events(text):
+    return [{'choices':[{'index':0,'delta':{'content':text},'finish_reason':'stop'}]}]
+
+
+def tool_events(call):
+    return [{'choices':[{'index':0,'delta':{'tool_calls':[{
+        'index':0,'id':call['call_id'],'type':'function',
+        'function':{'name':call['name'],'arguments':call['arguments']}}]},
+        'finish_reason':'tool_calls'}]}]
+
+
+DONE = ('data: '+json.dumps(text_events('hello')[0])+'\n\n').encode()
+BASE = 'https://model.example/v1'
 
 
 class Stream(httpx.SyncByteStream, httpx.AsyncByteStream):
@@ -50,21 +60,8 @@ class Stream(httpx.SyncByteStream, httpx.AsyncByteStream):
 
 
 def runtime():
-    # Bypass constructor: never import Hermes auth or load any credentials/models.
-    adapter = VoiceRuntime.__new__(VoiceRuntime)
-    entry = SimpleNamespace(runtime_api_key='synthetic', runtime_base_url=module.BASE,
-                            provider='openai-codex', id='synthetic-entry')
-    rotations = []
-
-    def rotate(**kwargs):
-        rotations.append(kwargs)
-        return entry
-
-    pool = SimpleNamespace(select=lambda: entry, mark_exhausted_and_rotate=rotate)
-    adapter.load_pool = lambda provider: pool
-    adapter.headers = lambda *args, **kwargs: {}
-    return adapter, rotations
-
+    adapter = VoiceRuntime(module.LLMConfig(BASE, 'synthetic-qwen', 'synthetic'))
+    return adapter, None
 
 class Transport:
     def __init__(self, responses):
@@ -99,28 +96,30 @@ async def reply(adapter):
     return await result if inspect.isawaitable(result) else result
 
 
-class CodexTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reasoning_high_and_route_contract(self):
+class LocalLLMTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_completions_route_contract(self):
         adapter, _ = runtime()
         stream = Stream()
         with Transport([(200, stream)]) as transport:
             self.assertEqual(await reply(adapter), 'hello')
         request = transport.requests[0]
         payload = json.loads(request.content)
-        self.assertEqual(payload['reasoning'], {'effort': 'high'})
-        self.assertEqual(payload['model'], 'gpt-6.1-sol')
-        self.assertEqual(payload['tools'], [])
-        self.assertEqual(payload['tool_choice'], 'none')
-        self.assertFalse(payload['store'])
+        self.assertEqual(payload['model'], 'synthetic-qwen')
+        self.assertNotIn('tools', payload)
+        self.assertNotIn('reasoning', payload)
+        self.assertNotIn('instructions', payload)
+        self.assertEqual(payload['messages'][1:], [
+            {'role':'assistant','content':'prior'}, {'role':'user','content':'hello'}])
         self.assertTrue(payload['stream'])
-        self.assertEqual(str(request.url), module.BASE + '/responses')
+        self.assertEqual(request.headers['Authorization'], 'Bearer synthetic')
+        self.assertEqual(str(request.url), BASE + '/chat/completions')
         self.assertTrue(stream.closed)
         self.assertTrue(all(client.is_closed for client in transport.clients))
 
     async def test_heartbeat_total_deadline_closes_upstream(self):
         adapter, _ = runtime()
         stream = Stream([b': heartbeat\n\n'] * 12 + [DONE], delay=0.015)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
+        with patch.object(module, 'LLM_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
             started = time.monotonic()
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(reply(adapter), 1)
@@ -130,36 +129,26 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
     async def test_stalled_read_deadline_closes_upstream(self):
         adapter, _ = runtime()
         stream = Stream([DONE], delay=0.2)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.04, create=True), Transport([(200, stream)]):
+        with patch.object(module, 'LLM_TOTAL_SECONDS', 0.04, create=True), Transport([(200, stream)]):
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(reply(adapter), 1)
         self.assertTrue(stream.closed)
 
-    async def test_deadline_spans_pool_rotation_attempts(self):
-        adapter, rotations = runtime()
-        streams = [Stream([b'rejected'], delay=0.03) for _ in range(3)]
-        # Delay response headers too, independent of whether error bodies are consumed.
-        original = module.httpx.AsyncClient
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(429, s) for s in streams]) as transport:
-            real_send = original.send
-
-            async def delayed_send(client, *args, **kwargs):
-                await asyncio.sleep(0.03)
-                return await real_send(client, *args, **kwargs)
-
-            with patch.object(original, 'send', delayed_send):
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(reply(adapter), 1)
-        self.assertLess(len(transport.requests), 3)
-        self.assertEqual(rotations[0], {'status_code': 429, 'api_key_hint': 'synthetic',
-                                        'credential_id': 'synthetic-entry'})
-        self.assertTrue(streams[0].closed)
+    async def test_auth_and_rate_limits_never_retry_or_rotate(self):
+        for status in (401,403,429,500,302):
+            adapter, _ = runtime()
+            stream = Stream()
+            with Transport([(status,stream)]) as transport:
+                with self.assertRaisesRegex(RuntimeError, '^llm_http_'+str(status)+'$'):
+                    await reply(adapter)
+            self.assertEqual(len(transport.requests), 1)
+            self.assertTrue(stream.closed)
 
     async def test_sse_unterminated_line_is_bounded(self):
         adapter, _ = runtime()
         stream = Stream([b':' + b'a' * 40, b'a' * 40, b'\n\n', DONE])
         with patch.object(module, 'SSE_LINE_BYTES', 64, create=True), Transport([(200, stream)]):
-            with self.assertRaisesRegex(RuntimeError, '^codex_sse_line_too_large$'):
+            with self.assertRaisesRegex(RuntimeError, '^llm_sse_line_too_large$'):
                 await reply(adapter)
         self.assertTrue(stream.closed)
 
@@ -167,7 +156,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
         adapter, _ = runtime()
         stream = Stream([b': heartbeat\n\n'] * 50 + [DONE])
         with patch.object(module, 'SSE_TOTAL_BYTES', 512, create=True), Transport([(200, stream)]):
-            with self.assertRaisesRegex(RuntimeError, '^codex_sse_total_too_large$'):
+            with self.assertRaisesRegex(RuntimeError, '^llm_sse_total_too_large$'):
                 await reply(adapter)
         self.assertTrue(stream.closed)
 
@@ -214,7 +203,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
                 class Loopback(httpx.AsyncBaseTransport):
                     async def handle_async_request(self, request):
                         # Production request still pins original supported URL.
-                        if str(request.url) != module.BASE + '/responses':
+                        if str(request.url) != BASE + '/chat/completions':
                             raise AssertionError('unexpected upstream URL')
                         request.url = httpx.URL(f'http://127.0.0.1:{port}/responses')
                         return await raw.handle_async_request(request)
@@ -224,7 +213,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
 
                 client_class = httpx.AsyncClient
                 try:
-                    with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.08, create=True), \
+                    with patch.object(module, 'LLM_TOTAL_SECONDS', 0.08, create=True), \
                          patch.object(module.httpx, 'Client', side_effect=AssertionError('synchronous_upstream_disallowed')), \
                          patch.object(module.httpx, 'AsyncClient', lambda **kw: client_class(transport=Loopback(), **kw)):
                         with self.assertRaises(TimeoutError):
@@ -241,18 +230,16 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_closes_without_waiting_for_eof(self):
         adapter, _ = runtime()
         stream = Stream([DONE, b': never needed\n\n'], delay=0.03)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
+        with patch.object(module, 'LLM_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
             self.assertEqual(await reply(adapter), 'hello')
         self.assertTrue(stream.closed)
 
-    async def test_rotation_keeps_issuing_identity_and_no_fallback(self):
-        adapter, rotations = runtime()
-        streams = [Stream(), Stream()]
-        with Transport([(429, streams[0]), (200, streams[1])]):
-            self.assertEqual(await reply(adapter), 'hello')
-        self.assertEqual(rotations, [{'status_code': 429, 'api_key_hint': 'synthetic',
-                                     'credential_id': 'synthetic-entry'}])
-        self.assertTrue(all(s.closed for s in streams))
+    async def test_reasoning_is_not_returned(self):
+        adapter, _ = runtime()
+        events = [{'choices':[{'index':0,'delta':{'reasoning_content':'private thought'},'finish_reason':None}]}]+text_events('answer')
+        stream = Stream([('data: '+json.dumps(e)+'\n\n').encode() for e in events])
+        with Transport([(200,stream)]):
+            self.assertEqual(await reply(adapter), 'answer')
 
     async def test_http_expiry_terminal_and_next_admission(self):
         await self.http_expiry()
@@ -281,7 +268,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             headers = {'Authorization': 'Bearer ' + 'a' * 48,
                        'Content-Type': 'audio/wav', 'X-Conversation': conversation}
             try:
-                with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, s) for s in streams]):
+                with patch.object(module, 'LLM_TOTAL_SECONDS', 0.05, create=True), Transport([(200, s) for s in streams]):
                     for key, expected in [('first', 'error'), ('second', 'done')]:
                         response = await client.post('/v1/turns', data=buf.getvalue(),
                                                      headers={**headers, 'Idempotency-Key': key})

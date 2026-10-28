@@ -1,93 +1,78 @@
-# sarah
+# Sarah
 
+Android voice assistant and Python HTTPS bridge, using a configurable OpenAI-compatible local model. No Hermes installation, credential pool, Codex account, or cloud-model fallback.
 
-
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://code.voegele.me/chad/sarah.git
-git branch -M main
-git push -uf origin main
+```text
+Android → HTTPS bridge → local Whisper → Qwen chat/completions
+        ← text + MP3   ← local Kokoro ← model reply
 ```
 
-## Integrate with your tools
+## Layout / provenance
 
-* [Set up project integrations](https://code.voegele.me/chad/sarah/-/settings/integrations)
+- `android/`: https://github.com/serexe/sarah-android at `e29456bc59fe26ecd482c434141f41433d2e8a90`.
+- `server/`: https://github.com/serexe/sarah-r1 at `9794c41b201cc97001e575cb28a72b54489148bb`, including its legacy Ubuntu Touch client/tests for reference.
+- Upstream MIT licenses and third-party notices are retained in each subtree. Upstream publication/checksum reports describe upstream artifacts, not this fork. Android is unchanged; its existing API matches this bridge.
+- The original import is committed separately from local backend changes. Upstream README/publication records are historical; this README and `server/docs/CONFIGURATION.md` describe the fork's setup.
 
-## Collaborate with your team
+## Server setup
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Requires Python 3.12, FFmpeg for MP3, local speech assets, and an OpenAI-compatible chat-completions server (such as llama.cpp).
 
-## Test and Deploy
+```sh
+cd server
+uv venv --python 3.12
+uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
 
-Use the built-in continuous integration in GitLab.
+# Copy generic configuration; edit privately, then explicitly export it.
+cp config/bridge.env.example .env
+# Supply endpoint/model and a provider token or private token-file path:
+export SARAH_LLM_BASE_URL=http://127.0.0.1:8012/v1
+export SARAH_LLM_MODEL=ggml-org/Qwen3.8-27B-GGUF:Q4_K_M
+export SARAH_LLM_API_KEY_FILE=/absolute/private/path/llm-token
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+# One-time local pairing state; token is saved privately, not printed.
+.venv/bin/python -m bridge.prepare --state .state --origin https://localhost:8787 --device android
+# Local test CA/server certificate only; use a trusted deployment cert for real use.
+openssl req -x509 -newkey rsa:2048 -nodes -days 7 \
+  -keyout .state/server.key -out .state/server.pem \
+  -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+  -addext 'basicConstraints=critical,CA:TRUE'
+chmod 600 .state/server.key
 
-***
+# Provision speech assets explicitly (runtime never downloads them).
+.venv/bin/python -c 'from faster_whisper.utils import download_model; download_model("base", cache_dir=".build/whisper-models")'
 
-# Editing this README
+.venv/bin/python -m bridge.server --db .state/state.db \
+  --cert .state/server.pem --key .state/server.key --bind 127.0.0.1 --port 8787
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+The server listens only on loopback by default. To pair a phone, deliberately configure a reachable bind address, firewall and TLS hostname/certificate; `localhost` on the phone is not this server. Android accepts an explicitly imported private CA. Enter the bridge origin and device token from `.state/native-settings.json`, **not** the Qwen token. Keep that file private.
 
-## Suggestions for a good README
+Kokoro is optional. Example setup from `server/` (review the upstream model/voice licenses before use):
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```sh
+uv venv --python 3.12 .build/kokoro-audition/venv
+uv pip install --python .build/kokoro-audition/venv/bin/python -r requirements-tts.txt
+curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -o .build/kokoro-audition/kokoro-v1.0.onnx
+curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -o .build/kokoro-audition/voices-v1.0.bin
+```
 
-## Name
-Choose a self-explaining name for your project.
+For a nondefault location, set `R1_KOKORO_ROOT` to the asset directory containing `venv/bin/python`. Missing TTS produces text-only replies. Missing Whisper assets fail voice turns. Speech models are not bundled.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Behavior and security
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+- `SARAH_LLM_BASE_URL` includes the API prefix, normally `/v1`; the bridge appends `/chat/completions`.
+- HTTP upstream is allowed only on loopback; remote endpoints require HTTPS. No redirect following, environment proxies, credential rotation, retries or fallback providers.
+- `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE` configures the provider token; set only one. Leave both unset for a deliberately unauthenticated endpoint. Never commit tokens.
+- Streams have a total deadline and byte/output limits. Only final answer content is spoken, not `reasoning_content`. Qwen thinking is disabled via `chat_template_kwargs.enable_thinking=false` for voice latency.
+- Existing optional tools remain disabled by default. Do not enable HA/calendar/notes/TV integrations without reviewing their broad permissions. No live integration is required for conversation.
+- Pairing/authentication, request idempotency, history, cancellation and server-owned action receipts retain the upstream protocol. History/media persist server-side; local Android reset does not erase them.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## Tests
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```sh
+cd server
+.venv/bin/python -m pytest -q
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Tests use synthetic credentials and loopback/mock services, never the real Qwen server. See `VALIDATION.md` for live-test results and limits. Android build prerequisites and private-signing limitations remain in `android/README.md`; no rebuilt APK is implied.

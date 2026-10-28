@@ -9,7 +9,7 @@ class ReadAnswers(Base):
         self.prose='Living Room, alpha and beta are on.'
         row=await self.submit()
         self.assertEqual(row['detail'],self.prose)
-        result=json.loads(self.wire[-1]['input'][-1]['output'])
+        result=json.loads(self.wire[-1]['messages'][1:][-1]['content'])
         self.assertIn('entities',result)
         self.assertEqual(self.payloads,[])
 
@@ -20,7 +20,7 @@ class ReadAnswers(Base):
         self.prose='Your note lists a Bosch dishwasher and induction range.'
         row=await self.submit()
         self.assertEqual(row['detail'],self.prose)
-        self.assertIn(self.body,self.wire[-1]['input'][-1]['output'])
+        self.assertIn(self.body,self.wire[-1]['messages'][1:][-1]['content'])
         self.assertFalse(any(p.endswith(('updateBlock','createDocWithMd')) for p,d in self.syrequests))
 
     async def test_mixed_reads_and_failed_write_keep_synthesis_and_truth(self):
@@ -29,7 +29,7 @@ class ReadAnswers(Base):
         self.prose='Your note says Original body. The light change could not be verified.'
         row=await self.submit()
         self.assertNotIn(self.prose,row['detail'])
-        self.assertIn('Original body', str(self.wire[-1]['input']))
+        self.assertIn('Original body', str(self.wire[-1]['messages'][1:]))
         self.assertIn('Outcome not verified. No automatic retry.',row['detail'])
         self.assertEqual(len(self.payloads),1)
 

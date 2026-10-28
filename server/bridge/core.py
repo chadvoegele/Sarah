@@ -30,14 +30,10 @@ def validate_audio(data):
             return duration
     except (wave.Error,EOFError):raise Denied('invalid_wav') from None
 
-class BlockedHermes:
-    """Intentional closed seam. Not a simulated working Hermes integration.
-
-    Existing /v1/runs cannot prove Codex-only fallback suppression and a
-    companion-specific dispatch policy. There is NO enable/unsafe override.
-    """
+class UnconfiguredRuntime:
+    """Fail closed unless a runtime is explicitly supplied."""
     ready=False
-    reason='hermes_ingress_security_extension_required'
+    reason='runtime_not_configured'
     def submit(self,*args,**kwargs):raise Denied(self.reason)
 
 class Store:

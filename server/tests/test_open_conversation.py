@@ -13,7 +13,7 @@ class OpenConversation(Base):
         if expected is not None:
             self.assertIn('State verified.' if 'State verified.' in expected else expected, row['detail'])
         self.assertEqual(self.spoken[-1], row['detail'])
-        self.assertEqual({t['name'] for t in self.wire[0]['tools']},
+        self.assertEqual({t['function']['name'] for t in self.wire[0]['tools']},
                          {t['name'] for t in __import__('bridge.ha',fromlist=['TOOLS']).TOOLS+__import__('bridge.siyuan',fromlist=['TOOLS']).TOOLS+__import__('bridge.calendar',fromlist=['TOOLS']).TOOLS+__import__('bridge.tvtime',fromlist=['TOOLS']).TOOLS})
         self.assertEqual(self.wire[0]['tool_choice'], 'auto')
         self.assertNotIn('confirmation', row)
@@ -49,10 +49,10 @@ class OpenConversation(Base):
         row = await self.next_turn('followup')
         self.assertIn('State verified.', row['detail']); self.assertIn('is off.', row['detail'])
         followup = self.wire[2]
-        self.assertEqual(followup['input'][:2], [
+        self.assertEqual(followup['messages'][1:][:2], [
             {'role':'user','content':'It is gloomy in here; brighten things up for me.'},
             {'role':'assistant','content':first['detail']}])
-        self.assertEqual(followup['input'][-1], {'role':'user','content':'Actually, undo that.'})
+        self.assertEqual(followup['messages'][1:][-1], {'role':'user','content':'Actually, undo that.'})
         self.assertEqual(len(followup['tools']), 18)
         self.assertEqual(len([m for m,p in self.requests if m=='POST']), 2)
         self.assertEqual(self.spoken[-1], row['detail'])
@@ -80,7 +80,7 @@ class OpenConversation(Base):
             self.assertEqual(row['state'], 'done')
             self.assertEqual(row['detail'], self.model_prose)
             self.assertEqual(len(self.wire[-1]['tools']), 18)
-            self.assertEqual(self.wire[-1]['input'][-1]['content'], text)
+            self.assertEqual(self.wire[-1]['messages'][1:][-1]['content'], text)
         self.assertEqual(self.requests, [])
 
     async def test_failed_action_cannot_be_overridden_by_model(self):

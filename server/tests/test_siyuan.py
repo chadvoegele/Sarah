@@ -42,12 +42,12 @@ class Notes(Base):
         self.calls=[('sy_list_notebooks',{}),('sy_search',{'query':'ideas'}),('sy_read',{'document_id':DOC}),self.action()]
         row=await self.submit()
         self.assertEqual(row['state'],'done',row)
-        self.assertIn('Original body',str(self.wire[-1]['input'])); self.assertIn('State verified.',row['detail'])
+        self.assertIn('Original body',str(self.wire[-1]['messages'][1:])); self.assertIn('State verified.',row['detail'])
         self.assertEqual(len(self.wire[0]['tools']),18)
         self.assertEqual(len(self.payloads),1)
         self.assertTrue(all(len(w['tools'])==18 for w in self.wire))
         self.calls=[('sy_read',{'document_id':DOC})]; await self.submit('followup')
-        self.assertIn(self.transcript,self.wire[-1]['input'][0]['content'])
+        self.assertIn(self.transcript,self.wire[-1]['messages'][1:][0]['content'])
     async def test_update_stable_id_verified_and_duplicate_once(self):
         action=('sy_update',{'document_id':DOC,'markdown':'# Ideas\n\nFresh body'})
         self.calls=[action,action]; row=await self.submit(); duplicate=await self.submit()
@@ -101,7 +101,7 @@ class Notes(Base):
     async def test_mixed_notes_then_ha_service_error_does_not_erase_note_read(self):
         self.prose='Your note says Original body. That service is unavailable.'
         self.calls=[('sy_read',{'document_id':DOC}),self.action('climate','invented','climate.study')]
-        row=await self.submit(); self.assertIn('Original body',str(self.wire[-1]['input']))
+        row=await self.submit(); self.assertIn('Original body',str(self.wire[-1]['messages'][1:]))
         self.assertIn('ha_service_unavailable',row['detail']); self.assertEqual(self.payloads,[])
 
     async def test_cancel_after_notes_write_discards_audio_and_never_replays(self):

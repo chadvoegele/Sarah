@@ -1,4 +1,4 @@
-"""Private TLS companion. Codex pool + local STT/TTS + opt-in exact HA."""
+"""Private TLS bridge. Configurable local LLM + local STT/TTS + opt-in tools."""
 import argparse
 import asyncio
 import hashlib
@@ -8,11 +8,11 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 from aiohttp import web
-from .core import BlockedHermes, Conflict, Denied, Store, validate_audio, canonical
+from .core import UnconfiguredRuntime, Conflict, Denied, Store, validate_audio, canonical
 
 
 def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None):
-    adapter = adapter or BlockedHermes()
+    adapter = adapter or UnconfiguredRuntime()
     buckets=defaultdict(deque); tasks={}; confirmations={}
     media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
     @web.middleware
@@ -37,7 +37,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         if not isinstance(value,dict) or set(value)!=set(keys):raise Denied('unexpected_fields')
         return value
     async def health(request):
-        reason='Codex voice conversation with full Home Assistant tools on every turn; model interprets natural language and conversation context. Discover actual entities, room groups, detailed state and services across all HA domains. Requested services run without repeated routine approval or entity/action authorization gates. Group outcomes require discovered unchanged membership and every member readback. Accepted services are not automatically verified; uncertain outcomes never auto-retried. No shell or arbitrary network tool.' if ha is not None else getattr(adapter,'reason','')
+        reason='Local-model voice conversation with full Home Assistant tools on every turn; model interprets natural language and conversation context. Discover actual entities, room groups, detailed state and services across all HA domains. Requested services run without repeated routine approval or entity/action authorization gates. Group outcomes require discovered unchanged membership and every member readback. Accepted services are not automatically verified; uncertain outcomes never auto-retried. No shell or arbitrary network tool.' if ha is not None else getattr(adapter,'reason','')
         if siyuan is not None: reason+=' SiYuan discovery/search/read/create/stable-ID update/append/edit and exact childless document deletion; writes verified by readback, deletion locally backed up. Private and root zArchive excluded.'
         if calendar is not None: reason+=' Calendar enabled for explicitly configured scope; list/read/create/update/exact delete with readback. Configuration is not live scope verification.'
         if tvtime is not None: reason+=' TV time ON uses existing canonical workflow once; webhook accepted is not device readiness proof.'
@@ -93,7 +93,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                     outcomes.append(dict(outcome))
                 return outcome
             # Every utterance reaches the model with the same supported tools.
-            # Semantic intent belongs to Codex, not a local phrase classifier.
+            # Semantic intent belongs to the model, not a local phrase classifier.
             text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
             if not active(device,turn):return
             # Actual dispatch outcomes remain server-owned. With no tool outcome,
@@ -180,11 +180,10 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
-    p.add_argument('--hermes-source',type=Path,required=True)
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
     args=p.parse_args();store=Store(args.db);store.recover()
     from .runtime import VoiceRuntime
-    adapter=VoiceRuntime(args.hermes_source)
+    adapter=VoiceRuntime()
     tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(args.cert,args.key)
     from .ha import HADispatcher

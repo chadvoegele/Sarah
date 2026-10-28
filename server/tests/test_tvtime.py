@@ -36,10 +36,10 @@ class TVTimeConversation(Base):
             self.assertNotIn('confirmation', row)
             self.assertEqual(self.spoken[-1], row['detail'])
             wire = self.wire[-2]
-            self.assertEqual(wire['input'][-1]['content'], phrase)
-            self.assertIn('tvtime_on', {t['name'] for t in wire['tools']})
-            self.assertIn('TV time', wire['instructions'])
-            self.assertIn('natural variants', wire['instructions'])
+            self.assertEqual(wire['messages'][1:][-1]['content'], phrase)
+            self.assertIn('tvtime_on', {t['function']['name'] for t in wire['tools']})
+            self.assertIn('TV time', wire['messages'][0]['content'])
+            self.assertIn('natural variants', wire['messages'][0]['content'])
             self.assertFalse(wire['parallel_tool_calls'])
         self.assertEqual(COMMAND, ('/usr/bin/python3', '/opt/sarah/bin/tvtime'))
         for call in self.mock_spawn.call_args_list:
@@ -140,7 +140,7 @@ class TVTimeConversation(Base):
         self.transcript = 'Do not start TV time; explain what TV time means.'
         row = await self.submit()
         self.assertEqual(row['detail'], self.prose)
-        self.assertIn(self.transcript, self.wire[0]['input'][-1]['content'])
+        self.assertIn(self.transcript, self.wire[0]['messages'][1:][-1]['content'])
         self.mock_spawn.assert_not_awaited()
 
 

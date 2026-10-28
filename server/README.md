@@ -1,5 +1,7 @@
 # S.A.R.A.H
 
+> This subtree was imported from upstream sarah-r1. Its R1 descriptions and publication records below are historical. This fork uses a Hermes-free local Qwen adapter; see [the repository README](../README.md) for Android and server setup.
+
 ### A small voice companion for an R1 running Ubuntu Touch.
 
 Tap to talk, hear a reply, and keep the conversation on screen. S.A.R.A.H pairs a native Qt/QML client with a self-hosted Python bridge for local speech processing, Codex conversation, and optional tools for your home, notes, and calendar.
