@@ -1,0 +1,24 @@
+# Local-only Android review workspace
+.local-review/
+.gradle/
+.gradle-cache/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.pem
+*.p12
+*.pfx
+*.key
+*.env
+.env*
+*.apk
+*.aar
+*.so
+*.pcm
+app/src/androidTest/assets/
+*.aab
+*.log
+*.hprof
+.idea/
+*.iml

@@ -1,0 +1,23 @@
+# S.A.R.A.H Android — active development
+
+**This is the current Android S.A.R.A.H voice-assistant development repository, not a historical-only archive.** The Kotlin/Compose client connects to a separately operated HTTPS voice bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. Current code23–26 work includes adaptive speech endpointing, wake-stage fixes, and the code26 softer mic-ready cue. Josh tested the code26 review APK on his phone, reported “Much better,” and approved committing this version. The current source is a **review checkpoint**, not a new release/tag, production promotion, or reproduced APK. See [CODE26-CHECKPOINT.md](CODE26-CHECKPOINT.md) for exact artifact association and proof limits; [CODE22-REVIEW.md](CODE22-REVIEW.md) and older code8 assets remain historical.
+
+## What this source does
+
+- Foreground tap-to-talk, encrypted local pairing state, authenticated HTTPS bridge health/upload and reply playback; unknown upload admission is not blindly retried.
+- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture, and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
+- Code21 corrected an offscreen cleanup owner-reference error (`this@OffscreenCommand`) after native ACK. Later source adds adaptive endpointing and wake-stage handling; no-speech or 30-second cap discards. The code26 softer cue starts after native recording reports ready and drains its acoustic tail before retaining command PCM. Phone feedback is subjective; code26 automated runtime/endpoint proof was not run.
+
+Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is published.
+
+## Build source and limits
+
+JDK 17, Android SDK 35 and Gradle 8.11.1 wrapper. The **compiled upstream sherpa-onnx AAR is intentionally not in Git**. Retrieve the official v2.0.1 artifact from the URL in [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7` before building; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notice texts are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
+
+`app/build.gradle.kts` retains its local review signing configuration, which reads `.local-review/review.jks` and `.local-review/signing-pass`. Those files are private and absent. A separately approved local signer is required for the configured signed debug build; do not regenerate or publish the phone-approved signer. Do not treat a locally rebuilt APK as identical to the reviewed code26 APK. Android instrumentation/device-fixture tests are omitted from this public current snapshot because their audio fixtures and test-server PKCS#12 private key are excluded. Historical `ScreenshotPolicyTest.kt` remains from code3; published unit tests under `app/src/test/` are source only. The code26 development report records 155 passing unit tests and successful lint/build; no tests or build were rerun for this publication. Build and test histories refer to the separate local development workspace, not this checkout.
+
+## Repository history and licensing
+
+This checkpoint preserves prior commits, screenshots, `CODE3-*` records, code21/22 publication records, existing historical releases/assets, and historical code8 [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and `notices/` tree. **Historical identity/checksum assertions in those documents still refer to code8.** Existing third-party notices and Eigen covered-source downloads remain linked without claiming an exhaustive SBOM or legal certification. Older [docs/screenshots](docs/screenshots/) images show code3 only.
+
+Owner-controlled source/artwork: [MIT LICENSE](LICENSE); third-party components and model keep separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies; `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its ThirdPartyNotices. No APK or compiled native AAR is committed to Git; code26 APK was reviewed privately, not published by this source checkpoint or claimed bit-reproducible.
