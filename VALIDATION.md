@@ -29,7 +29,9 @@ The first live run caught a faster-whisper/PyAV incompatibility (`metadata_error
 
 ## Offline checks
 
-Configuration and privacy-hygiene checks passed. The full regression suite is recorded below after completion.
+Full offline suite: **270 passed, 44 subtests passed**, in 67.85 seconds on Python 3.12.15. Two warnings: upstream aiohttp request-key style and an inherited multithreaded-fork power-helper probe. No failed tests. Command: `.venv/bin/python -m pytest -x -vv -o faulthandler_timeout=12`. The diagnostic timeout printed a stack during a slow inherited probe, but that probe and the suite completed successfully.
+
+Earlier runs showed intermittent HA timeouts/hangs with AnyIO 4.15.1. A hang also reproduced against the unchanged upstream HA tests in the same environment. The final successful suite used pinned `anyio==4.8.0`; the precise upstream/dependency timing cause was not fully isolated. Test fixture polling was slowed to avoid exceeding the real bridge device rate limit. Configuration and tracked-source privacy checks also passed independently.
 
 The publication-hygiene test scans Git-tracked source copied into a clean directory, not the working tree's private state, models or dependency environments. The scanner's synthetic fail-closed tests still verify unmanifested files, secrets, forbidden directories and invalid inventories. Added source is explicitly listed in the server publication manifest. The upstream reviewed PNG is preserved unchanged.
 
