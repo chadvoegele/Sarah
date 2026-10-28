@@ -84,3 +84,8 @@ bridge/llm_config.py
 tests/test_llm_config.py
 tools/smoke_voice.py
 requirements-tts.txt
+bridge/acp_client.py
+bridge/acp_runtime.py
+docs/ACP.md
+tests/test_acp.py
+tests/test_acp_config.py

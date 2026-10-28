@@ -1,6 +1,6 @@
 # Sarah
 
-Android voice assistant and Python HTTPS bridge, using a configurable OpenAI-compatible local model. No Hermes installation, credential pool, Codex account, or cloud-model fallback.
+Android voice assistant and Python HTTPS bridge, with a configurable OpenAI-compatible local model (default) or an optional [ACP agent backend](server/docs/ACP.md). No Hermes installation, credential pool, or automatic provider fallback. An ACP agent manages its own model/credentials/tools.
 
 ```text
 Android → HTTPS bridge → local Whisper → Qwen chat/completions
@@ -13,6 +13,10 @@ Android → HTTPS bridge → local Whisper → Qwen chat/completions
 - `server/`: https://github.com/serexe/sarah-r1 at `9794c41b201cc97001e575cb28a72b54489148bb`, including its legacy Ubuntu Touch client/tests for reference.
 - Upstream MIT licenses and third-party notices are retained in each subtree. Upstream publication/checksum reports describe upstream artifacts, not this fork. Android is unchanged; its existing API matches this bridge.
 - The original import is committed separately from local backend changes. Upstream README/publication records are historical; this README and `server/docs/CONFIGURATION.md` describe the fork's setup.
+
+## ACP / Dex backend
+
+Set `SARAH_BACKEND=acp`, `SARAH_ACP_CWD` to the agent's absolute working directory, and `SARAH_ACP_SOCKET` to its Unix socket. Alternatively set `SARAH_ACP_COMMAND` to a JSON argv array for a stdio agent. [ACP setup and security](server/docs/ACP.md) covers dedicated persistent conversation sessions, cancellation, denied client permission requests, and future Dex socket-volume access. This does not deploy or change Dex; an ACP agent's own tools retain its configured privileges.
 
 ## Server setup
 
@@ -65,6 +69,7 @@ For a nondefault location, set `R1_KOKORO_ROOT` to the asset directory containin
 - HTTP upstream is allowed only on loopback; remote endpoints require HTTPS. No redirect following, environment proxies, credential rotation, retries or fallback providers.
 - `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE` configures the provider token; set only one. Leave both unset for a deliberately unauthenticated endpoint. Never commit tokens.
 - Streams have a total deadline and byte/output limits. Only final answer content is spoken, not `reasoning_content`. Qwen thinking is disabled via `chat_template_kwargs.enable_thinking=false` for voice latency.
+- ACP is opt-in. Its agent owns context and tools; Sarah does not replay prompts after uncertain results or attach to existing Matrix sessions. Bridge-owned integrations cannot be enabled with ACP.
 - Existing optional tools remain disabled by default. Do not enable HA/calendar/notes/TV integrations without reviewing their broad permissions. No live integration is required for conversation.
 - Pairing/authentication, request idempotency, history, cancellation and server-owned action receipts retain the upstream protocol. History/media persist server-side; local Android reset does not erase them.
 

@@ -149,14 +149,9 @@ def speech_text(text):
     return re.sub(r'\x00(\d+)\x00', lambda m: literals[int(m.group(1))], text).strip()
 
 
-class VoiceRuntime:
-    ready = True
-    reason = 'Local-model voice conversation; integrations disabled unless explicitly configured'
-    def __init__(self, config=None):
-        config = config or LLMConfig.from_env()
-        self.base_url = config.base_url
-        self.api_key = config.api_key
-        self.model = config.model
+class SpeechRuntime:
+    """Local speech shared by the direct-model and ACP backends."""
+    def __init__(self):
         self.whisper = None
         self.lock = threading.Lock()
 
@@ -170,6 +165,39 @@ class VoiceRuntime:
         if not text or len(text)>8000:
             raise ValueError('empty_or_oversize_transcript')
         return text
+
+    async def speak(self, text, path):
+        # Local CPU voice; no external speech fallback.
+        # No eSpeak speech route, download, cloud or paid fallback.
+        import tempfile
+        path = Path(path)
+        root = Path(os.getenv('R1_KOKORO_ROOT', str(Path(__file__).resolve().parents[1]/'.build/kokoro-audition')))
+        # Same-filesystem private scratch; final media name never holds partial
+        # output. No await between successful encode and atomic publication.
+        with tempfile.TemporaryDirectory(prefix='.r1-tts-', dir=path.parent) as tmp:
+            wav=Path(tmp)/'speech.wav'
+            encoded=Path(tmp)/'speech.mp3'
+            await _tts_process(str(root/'venv/bin/python'), '-I',
+                str(Path(__file__).with_name('kokoro_tts.py')), '--output', str(wav),
+                input=speech_text(text).encode(), failure='local_tts_failed',
+                stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+            await _tts_process('/usr/bin/ffmpeg','-nostdin','-loglevel','error','-y','-i',str(wav),'-codec:a','libmp3lame',str(encoded),
+                failure='tts_encoding_failed',stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+            if not encoded.is_file() or encoded.stat().st_size == 0:
+                raise RuntimeError('tts_encoding_failed')
+            encoded.chmod(0o600)
+            encoded.replace(path)
+
+
+class VoiceRuntime(SpeechRuntime):
+    ready = True
+    reason = 'Local-model voice conversation; integrations disabled unless explicitly configured'
+    def __init__(self, config=None):
+        super().__init__()
+        config = config or LLMConfig.from_env()
+        self.base_url = config.base_url
+        self.api_key = config.api_key
+        self.model = config.model
 
     async def reply(self, text, history=(), dispatch=None):
         # One deadline across all HTTP attempts, not a per-read timeout and not
@@ -282,25 +310,3 @@ class VoiceRuntime:
         if completed!='stop' or not result:
             raise RuntimeError('llm_incomplete_response')
         return result
-
-    async def speak(self, text, path):
-        # Local CPU voice; no external speech fallback.
-        # No eSpeak speech route, download, cloud or paid fallback.
-        import tempfile
-        path = Path(path)
-        root = Path(os.getenv('R1_KOKORO_ROOT', str(Path(__file__).resolve().parents[1]/'.build/kokoro-audition')))
-        # Same-filesystem private scratch; final media name never holds partial
-        # output. No await between successful encode and atomic publication.
-        with tempfile.TemporaryDirectory(prefix='.r1-tts-', dir=path.parent) as tmp:
-            wav=Path(tmp)/'speech.wav'
-            encoded=Path(tmp)/'speech.mp3'
-            await _tts_process(str(root/'venv/bin/python'), '-I',
-                str(Path(__file__).with_name('kokoro_tts.py')), '--output', str(wav),
-                input=speech_text(text).encode(), failure='local_tts_failed',
-                stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
-            await _tts_process('/usr/bin/ffmpeg','-nostdin','-loglevel','error','-y','-i',str(wav),'-codec:a','libmp3lame',str(encoded),
-                failure='tts_encoding_failed',stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
-            if not encoded.is_file() or encoded.stat().st_size == 0:
-                raise RuntimeError('tts_encoding_failed')
-            encoded.chmod(0o600)
-            encoded.replace(path)

@@ -1,5 +1,7 @@
 # Architecture and trust boundaries
 
+`SARAH_BACKEND=llm` uses the direct model flow below. `SARAH_BACKEND=acp` shares local speech but delegates each transcript to a separately configured ACP agent using dedicated durable sessions. [ACP architecture and trust boundaries](ACP.md) describe session recovery, no-replay behavior, permission denial and agent-owned tools.
+
 Client → HTTPS bearer-authenticated bridge → local STT → OpenAI-compatible local-model chat completions → optional explicitly configured dispatchers → local TTS → authenticated media download.
 
 API routes: `GET /v1/health`, `POST /v1/conversations`, `POST /v1/turns`, `GET /v1/requests/{request}`, `GET /v1/turns/{turn}`, `GET /v1/turns/{turn}/audio`, and turn `/cancel` and `/confirmation` POSTs. Health requires device authentication too. Audio upload requires `Content-Type: audio/wav`, `X-Conversation`, and `Idempotency-Key`.
