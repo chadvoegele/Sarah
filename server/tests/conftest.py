@@ -6,7 +6,7 @@ import pytest
 
 # Apply before test module imports. Do not load or inspect credential files.
 for name in list(os.environ):
-    if name.startswith(('R1_', 'SIYUAN_', 'MATON_')):
+    if name.startswith(('R1_', 'SIYUAN_', 'MATON_', 'SARAH_')):
         os.environ.pop(name, None)
 
 

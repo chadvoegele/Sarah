@@ -80,3 +80,7 @@ tests/test_siyuan.py
 tests/test_speech_format.py
 tests/test_tvtime.py
 tools/privacy_scan.py
+bridge/llm_config.py
+tests/test_llm_config.py
+tools/smoke_voice.py
+requirements-tts.txt

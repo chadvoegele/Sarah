@@ -13,7 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bridge.core import Store, Denied
 from bridge.ha import HADispatcher, validate
 from bridge.server import make_app
-from test_runtime import runtime, Stream
+from test_runtime import text_events, tool_events, runtime, Stream
 
 ARGS={'domain':'light','service':'turn_on','entity_id':'light.example_bulb_c','data':{}}
 
@@ -63,17 +63,17 @@ class Slice(unittest.IsolatedAsyncioTestCase):
         class Wire(httpx.AsyncBaseTransport):
             def __init__(self):self.raw=httpx.AsyncHTTPTransport()
             async def handle_async_request(self,request):
-                if request.url.host!='chatgpt.com':return await self.raw.handle_async_request(request)
+                if request.url.host!='model.example':return await self.raw.handle_async_request(request)
                 payload=json.loads(request.content);owner.wire.append(payload)
-                if owner.model_prose is not None or (not getattr(owner,'repeat_calls',False) and any(i.get('type')=='function_call_output' for i in payload['input'])):
+                if owner.model_prose is not None or (not getattr(owner,'repeat_calls',False) and any(i.get('role')=='tool' for i in payload['messages'][1:])):
                     prose=owner.model_prose or 'Untrusted model says done'
                     if owner.model_prose is None and owner.callname=='ha_get_state':
-                        outcome=json.loads(payload['input'][-1]['output'])
+                        outcome=json.loads(payload['messages'][1:][-1]['content'])
                         prose=outcome['entity_id']+' is '+outcome['state']+'.'
-                    events=[{'type':'response.output_text.delta','delta':prose},{'type':'response.completed'}]
+                    events=text_events(prose)
                 else:
                     call={'type':'function_call','name':owner.callname,'arguments':json.dumps(owner.args),'call_id':'synthetic-call'}
-                    events=[{'type':'response.output_item.done','item':call},{'type':'response.completed','response':{'output':[call]}}]
+                    events=tool_events(call)
                 return httpx.Response(200,stream=Stream([('data: '+json.dumps(e)+'\n\n').encode() for e in events]))
             async def aclose(self):await self.raw.aclose()
         self.model_prose=None
@@ -93,7 +93,7 @@ class Slice(unittest.IsolatedAsyncioTestCase):
             while True:
                 row=await (await self.client.get('/v1/turns/'+self.turn,headers=self.headers)).json()
                 if row['state'] in states:return row
-                await asyncio.sleep(.025)
+                await asyncio.sleep(.1)  # Stay below the production device rate limit.
     async def test_no_tool_response_preserved(self):
         self.model_prose='Which light did you mean?';row=await self.submit()
         self.assertEqual(row['detail'],self.model_prose)
@@ -129,7 +129,7 @@ class Slice(unittest.IsolatedAsyncioTestCase):
         for data in ({'brightness':100},{'url':'https://untrusted.example.invalid'},{'volume_level':1}):
             validate('ha_call_service',ARGS|{'data':data})
         self.callname='terminal';self.args={'command':'no'};row=await self.submit()
-        self.assertIn('denied',row['detail']);self.assertEqual(self.requests,[])
+        self.assertEqual(row['state'],'error');self.assertIn('RuntimeError',row['detail']);self.assertEqual(self.requests,[])
     async def test_tv_without_local_optin(self):
         self.entity='media_player.example_tv';self.state='paused'
         self.args={'domain':'media_player','service':'media_play','entity_id':self.entity,'data':{}}

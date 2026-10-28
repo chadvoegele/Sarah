@@ -54,7 +54,7 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(seen, ['Oven\nGE Café: CTC912P2NS1, one hundred dollars and fifty cents.'])
                 case.calls = []
                 await case.submit('followup')
-                self.assertIn({'role': 'assistant', 'content': case.prose}, case.wire[-1]['input'])
+                self.assertIn({'role': 'assistant', 'content': case.prose}, case.wire[-1]['messages'][1:])
             self.assertEqual(case.body, 'Original body')
         finally:
             await case.asyncTearDown()

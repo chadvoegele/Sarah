@@ -13,7 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bridge.core import Store
 from bridge.ha import HADispatcher, TOOLS, validate
 from bridge.server import make_app
-from test_runtime import runtime, Stream
+from test_runtime import text_events, tool_events, runtime, Stream
 
 
 class FullHA(unittest.IsolatedAsyncioTestCase):
@@ -67,14 +67,14 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
         class Wire(httpx.AsyncBaseTransport):
             def __init__(self): self.raw = httpx.AsyncHTTPTransport()
             async def handle_async_request(self,request):
-                if request.url.host != 'chatgpt.com': return await self.raw.handle_async_request(request)
+                if request.url.host != 'model.example': return await self.raw.handle_async_request(request)
                 payload = json.loads(request.content); owner.wire.append(payload)
-                count = sum(i.get('type') == 'function_call_output' for i in payload['input'])
+                count = sum(i.get('role') == 'tool' for i in payload['messages'][1:])
                 if count < len(owner.calls):
                     name,args = owner.calls[count]
                     call = {'type':'function_call','call_id':'call-'+str(count),'name':name,'arguments':json.dumps(args)}
-                    events = [{'type':'response.completed','response':{'output':[call]}}]
-                else: events = [{'type':'response.output_text.delta','delta':owner.prose},{'type':'response.completed'}]
+                    events = tool_events(call)
+                else: events = text_events(owner.prose)
                 return httpx.Response(200,stream=Stream([('data: '+json.dumps(e)+'\n\n').encode() for e in events]))
             async def aclose(self): await self.raw.aclose()
         self.patch = patch('httpx.AsyncClient',lambda **kw: original(transport=Wire(),**kw)); self.patch.start()
@@ -95,7 +95,7 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
             while True:
                 row = await (await self.client.get('/v1/turns/'+turn,headers=self.headers)).json()
                 if row['state'] in ('done','error','confirming','cancelled'): return row
-                await asyncio.sleep(.025)
+                await asyncio.sleep(.1)  # Stay below the production device rate limit.
 
     def action(self,domain='light',service='turn_off',entity=None,data=None):
         return ('ha_call_service',{'domain':domain,'service':service,'entity_id':entity or self.room,'data':data or {}})
@@ -110,9 +110,9 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
         self.assertIn('already claimed',row['detail'])
         self.assertEqual(self.payloads,[{'entity_id':self.room}])
         self.assertTrue(all(any(p == '/api/states/'+e for _,p in self.requests) for e in self.members))
-        outputs = [json.loads(i['output']) for i in self.wire[1]['input'] if i.get('type') == 'function_call_output']
+        outputs = [json.loads(i['content']) for i in self.wire[1]['messages'][1:] if i.get('role') == 'tool']
         self.assertEqual(outputs[0]['entities'][0]['entity_id'],self.room)
-        self.assertEqual({t['name'] for t in self.wire[0]['tools']},
+        self.assertEqual({t['function']['name'] for t in self.wire[0]['tools']},
             {t['name'] for t in __import__('bridge.ha',fromlist=['TOOLS']).TOOLS+__import__('bridge.siyuan',fromlist=['TOOLS']).TOOLS+__import__('bridge.calendar',fromlist=['TOOLS']).TOOLS+__import__('bridge.tvtime',fromlist=['TOOLS']).TOOLS})
         duplicate = await self.submit()
         self.assertEqual(duplicate['id'],row['id']); self.assertEqual(len(self.payloads),1)
@@ -125,7 +125,7 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['state'],'done',row)
         self.assertEqual(self.payloads,[{'entity_id':'climate.study','temperature':22.5,'hvac_mode':'heat'}])
         self.assertNotIn('{',row['detail'])
-        self.assertIn('22.5',self.wire[-1]['input'][-1]['output'])
+        self.assertIn('22.5',self.wire[-1]['messages'][1:][-1]['content'])
         self.assertNotIn('State verified.',row['detail'])
 
     async def test_unsupported_service_truthful_error_no_post(self):
@@ -157,7 +157,7 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests,[])
         self.assertEqual(len(self.wire[-1]['tools']),18)
         self.assertEqual(self.wire[-1]['tool_choice'],'auto')
-        self.assertEqual(self.wire[-1]['input'][0]['content'],'Please make the living room dark.')
+        self.assertEqual(self.wire[-1]['messages'][1:][0]['content'],'Please make the living room dark.')
         self.assertNotIn('confirmation',second)
         self.assertEqual((await self.client.get('/v1/health')).status,403)
 
@@ -167,7 +167,7 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['state'],'done',row)
         self.assertIn(('POST','/api/services/script/calculate?return_response'),self.requests)
         self.assertNotIn('{',row['detail'])
-        self.assertIn('42',self.wire[-1]['input'][-1]['output'])
+        self.assertIn('42',self.wire[-1]['messages'][1:][-1]['content'])
         self.assertNotIn('State verified.',row['detail'])
 
     async def test_equivalent_json_target_dedupes_and_legacy_allowlist_not_gate(self):
@@ -202,7 +202,7 @@ class FullHA(unittest.IsolatedAsyncioTestCase):
     async def test_no_shell_or_url_tool_and_path_validation(self):
         self.calls = [('terminal',{'command':'id'})]
         row = await self.submit()
-        self.assertIn('ha_tool_denied',row['detail']); self.assertEqual(self.requests,[])
+        self.assertEqual(row['state'],'error'); self.assertIn('RuntimeError',row['detail']); self.assertEqual(self.requests,[])
         from bridge.core import Denied
         for value in ('../states','https://untrusted.example.invalid','light/x'):
             with self.assertRaises(Denied): validate('ha_call_service',{'domain':value,'service':'turn_on','data':{}})

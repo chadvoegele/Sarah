@@ -13,7 +13,7 @@ class Routine(Base):
         self.assertIn('State verified.',row['detail'])
         self.assertEqual(self.spoken,[row['detail']])
         self.assertEqual(self.requests,[('GET','/api/services'),('GET','/api/states/light.example_bulb_c'),('POST','/api/services/light/turn_on'),('GET','/api/states/light.example_bulb_c')])
-        self.assertIn('without repeated routine approval',self.wire[0]['instructions'])
+        self.assertIn('without repeated routine approval',self.wire[0]['messages'][0]['content'])
     async def test_direct_duplicate_upload_no_replay(self):
         first=await self.submit(); second=await self.submit()
         self.assertEqual(first['id'],second['id'])

@@ -125,7 +125,7 @@ class RoomConversation(Slice):
         self.assertIn('State verified.', row['detail'])
         self.assertEqual(self.spoken, [row['detail']])
         self.assertEqual(self.requests, [('GET','/api/services'), *[('GET','/api/states/'+e) for e in (ROOM,*MEMBERS)], ('POST','/api/services/light/turn_off'), *[('GET','/api/states/'+e) for e in (ROOM,*MEMBERS)]])
-        instructions = self.wire[0]['instructions']
+        instructions = self.wire[0]['messages'][0]['content']
         self.assertIn('room group', instructions)
         self.assertNotIn(ROOM, instructions)
         self.assertNotIn('use exactly that service and light.example_bulb_c', instructions)

@@ -66,5 +66,14 @@ def test_project_mit_license_metadata():
     assert "LICENSE" in (ROOT / "PUBLICATION-MANIFEST.txt").read_text().splitlines()
 
 
-def test_public_source_privacy_hygiene():
-    assert scanner.scan(ROOT) == []
+def test_public_source_privacy_hygiene(tmp_path):
+    # Scan the tracked publication, not private runtime state/dependencies.
+    # The scanner still rejects every unmanifested or forbidden published file.
+    import shutil
+    import subprocess
+    paths = subprocess.check_output(['git','ls-files','-z','.'], cwd=ROOT).decode().split('\0')
+    for name in filter(None, paths):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    assert scanner.scan(tmp_path) == []

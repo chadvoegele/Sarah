@@ -22,11 +22,11 @@ class CalendarConversation(Base):
         self.calls=[('calendar_list',{'time_min':'2026-10-25T00:00:00-05:00','time_max':'2026-10-26T00:00:00-05:00'})]
         row=await self.submit(); self.assertEqual(row['detail'],self.prose)
         wire=self.wire[0]; self.assertEqual(wire['tool_choice'],'auto'); self.assertFalse(wire['parallel_tool_calls'])
-        self.assertTrue({'calendar_create','calendar_update','calendar_delete'}<={t['name'] for t in wire['tools']})
-        self.assertIn('UTC',wire['instructions'])
-        self.assertIn('You are S.A.R.A.H, pronounced Sarah',wire['instructions'])
-        self.assertNotIn('You are Hermes',wire['instructions'])
-        self.assertIn('Current server time in UTC:',wire['instructions'])
+        self.assertTrue({'calendar_create','calendar_update','calendar_delete'}<={t['function']['name'] for t in wire['tools']})
+        self.assertIn('UTC',wire['messages'][0]['content'])
+        self.assertIn('You are S.A.R.A.H, pronounced Sarah',wire['messages'][0]['content'])
+        self.assertNotIn('You are Hermes',wire['messages'][0]['content'])
+        self.assertIn('Current server time in UTC:',wire['messages'][0]['content'])
         self.assertFalse(any(m!='GET' for m,p,d in self.calendar_calls))
     async def test_different_second_mutation_blocked_and_receipt_truth(self):
         self.transcript='Rename my dentist event to Checkup.'; self.prose='Deleted everything!'

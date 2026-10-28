@@ -2,7 +2,9 @@
 
 `config/bridge.env.example` lists generic values; it is not loaded automatically. Export approved values or use a private service-manager environment file. Never source untrusted env files. Integration flags require literal `1`; credentials alone do not enable a backend. No credentials are shipped.
 
-- `R1_CODEX_MODEL`: conversation model identifier; default retained from source. Account/provider must support it; no availability claim is made.
+- `SARAH_LLM_BASE_URL`: OpenAI-compatible API prefix (default `http://127.0.0.1:8012/v1`); appends `/chat/completions`. HTTPS required except on loopback; no URL credentials/query/fragment. Redirects, proxies and automatic retries are disabled.
+- `SARAH_LLM_MODEL`: model ID (default `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M`).
+- `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE`: server-side provider token. Set only one; both empty omits upstream authentication. Token is never included in device responses or configuration repr. There is no Hermes credential pool or Codex fallback.
 - `R1_WHISPER_MODELS`: local faster-whisper download/cache root, no automatic fetch.
 - `R1_KOKORO_ROOT`: isolated TTS venv and ONNX/voice asset directory.
 - `R1_TIMEZONE`: IANA timezone shared by calendar schemas, receipts and speech; default UTC. Set before process start. Invalid timezone fails startup/import. Restart your own bridge to change module-level schemas; never mix timezone values across components.

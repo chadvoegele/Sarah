@@ -148,7 +148,7 @@ class Narration(NotesBase):
         self.assertIn('Outcome not verified',row['detail'])
         self.assertEqual(self.spoken,[row['detail']])
         self.assertEqual(len(self.payloads),1)
-        self.assertIn('Original body',str(self.wire[-1]['input']))
+        self.assertIn('Original body',str(self.wire[-1]['messages'][1:]))
 
     async def test_verified_action_uses_server_summary_not_model_json(self):
         self.calls=[self.action()]
@@ -157,8 +157,8 @@ class Narration(NotesBase):
         self.assertIn('Living Room is off.',row['detail'])
         self.assertNotIn('{',row['detail'])
         self.assertNotIn(self.prose,row['detail'])
-        outputs=[i for i in self.wire[-1]['input'] if i.get('type')=='function_call_output']
-        self.assertIn('"states"',outputs[-1]['output'])
+        outputs=[i for i in self.wire[-1]['messages'][1:] if i.get('role')=='tool']
+        self.assertIn('"states"',outputs[-1]['content'])
 
 for cls,base in ((Convergence,GroupBase),(Narration,NotesBase)):
     for name in dir(base):
