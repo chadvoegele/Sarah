@@ -1,11 +1,10 @@
-"""Offline speech/receipt regressions, using synthetic calendar fixtures."""
+"""Offline clock presentation and speech-boundary regressions."""
 import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from bridge import runtime
 from bridge.runtime import speech_text
-from test_calendar_rw import CalendarRW, EVENT
 
 class ClockSpeech(unittest.IsolatedAsyncioTestCase):
     def test_clock_formats(self):
@@ -41,32 +40,3 @@ class ClockSpeech(unittest.IsolatedAsyncioTestCase):
             await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original,Path(tmp)/'out.mp3')
         self.assertEqual(seen,['Test event on 2026-10-24 at 2026-10-24 at ten P M.'])
         self.assertEqual(original,'Test event on 2026-10-24 at 2026-10-24T22:00:00Z.')
-
-class HumanCalendarReceipts(CalendarRW):
-    async def test_human_receipts_not_ids(self):
-        for name,args,verb in [
-            ('calendar_create',{k:EVENT[k] for k in ('summary','start','end')},'Added'),
-            ('calendar_update',{'event_id':'abc123','changes':{'summary':'Checkup'}},'Updated'),
-            ('calendar_delete',{'event_id':'abc123','expected_summary':'Checkup'},'Deleted')]:
-            result=await self.c.dispatch(name,args,self.claim)
-            self.assertTrue(result['verified'],result)
-            self.assertEqual(result['event_id'],'abc123')
-            self.assertTrue(result['reply'].startswith(verb),result)
-            self.assertIn('Dentist' if verb=='Added' else 'Checkup',result['reply'])
-            self.assertIn('10:00 AM',result['reply'])
-            self.assertNotIn('abc123',result['reply'])
-            self.assertNotIn('verified',result['reply'])
-    async def test_read_converts_offset_to_configured_zone(self):
-        self.event=dict(EVENT,start={'dateTime':'2026-10-25T15:00:00Z'})
-        result=await self.c.dispatch('calendar_read',{'event_id':'abc123'},self.claim)
-        self.assertEqual(result['event']['start']['dateTime'],'2026-10-25T15:00:00+00:00')
-    async def test_failed_receipt_retains_uncertainty(self):
-        self.failwrite=True
-        result=await self.c.dispatch('calendar_update',{'event_id':'abc123','changes':{'summary':'Checkup'}},self.claim)
-        self.assertFalse(result['verified'])
-        self.assertIn('outcome not verified',result['reply'])
-        self.assertNotIn('Updated',result['reply'])
-
-for name in list(dir(CalendarRW)):
-    if name.startswith('test_') and name not in HumanCalendarReceipts.__dict__: setattr(HumanCalendarReceipts,name,None)
-del CalendarRW

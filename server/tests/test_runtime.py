@@ -241,6 +241,33 @@ class LocalLLMTests(unittest.IsolatedAsyncioTestCase):
         with Transport([(200,stream)]):
             self.assertEqual(await reply(adapter), 'answer')
 
+    async def test_unsupported_tools_and_invalid_completions_fail_closed(self):
+        tool = tool_events({'call_id':'denied', 'name':'ha_call_service',
+                            'arguments':'{}'})
+        cases = [
+            (tool, 'llm_tool_denied'),
+            ([{'choices':[{'delta':{'tool_calls':[{'index':1}]}}]}], 'llm_tool_denied'),
+            ([{'choices':[{'delta':{'function_call':{'name':'legacy'}}}]}], 'llm_tool_denied'),
+            ([{'choices':[{'delta':{},'finish_reason':'tool_calls'}]}], 'llm_tool_denied'),
+            ([{'choices':[{'delta':{},'finish_reason':'function_call'}]}], 'llm_tool_denied'),
+            ([{'error':{'message':'synthetic'}}], 'llm_response_failed'),
+            ([{'choices':[{'index':1,'delta':{'content':'wrong'}}]}], 'llm_invalid_choices'),
+            ([{'choices':[{'delta':{'content':['invalid']}}]}], 'llm_invalid_content'),
+            (text_events('x' * 12001), 'reply_too_long'),
+            (text_events(''), 'llm_incomplete_response'),
+            ([{'choices':[{'delta':{'content':'partial'}}]}], 'llm_incomplete_response'),
+            ([{'choices':[{'delta':{'content':'partial'},'finish_reason':'length'}]}], 'llm_incomplete_response'),
+        ]
+        for events, reason in cases:
+            with self.subTest(events=str(events)[:100], reason=reason):
+                adapter, _ = runtime()
+                stream = Stream([('data: '+json.dumps(e)+'\n\n').encode() for e in events])
+                with Transport([(200,stream)]) as transport:
+                    with self.assertRaisesRegex(RuntimeError, '^'+reason+'$'):
+                        await reply(adapter)
+                self.assertEqual(len(transport.requests), 1)
+                self.assertTrue(stream.closed)
+
     async def test_http_expiry_terminal_and_next_admission(self):
         await self.http_expiry()
 

@@ -51,9 +51,9 @@ Only `agent_message_chunk` text received during the active prompt is retained/sp
 
 **Selecting an ACP backend delegates to an agent with its own configured privileges.** Denying ACP client permission requests is not an agent sandbox. In particular, Pi/Dex may execute its own tools without asking the client; its credentials and host mounts can provide broad access.
 
-Sarah always returns a cancelled permission outcome and rejects delegated filesystem/terminal/client RPC methods. There is no automatic approval policy. Sarah's HA/notes/calendar/TV integrations cannot be enabled alongside ACP; startup rejects that combination. Configure tools and restrictions on the ACP agent instead. The health response's `tools` field describes Sarah-owned integrations only; it does not certify that an ACP agent has no tools. `backend=acp` identifies the selected trust boundary.
+Sarah always returns a cancelled permission outcome and rejects delegated filesystem/terminal/client RPC methods. There is no automatic approval policy. Sarah's inherited HA/notes/calendar/TV dispatchers have been removed from both backends. Configure tools and restrictions on the ACP agent instead. The health response's `tools` field describes Sarah-owned integrations only; it does not certify that an ACP agent has no tools. `backend=acp` identifies the selected trust boundary.
 
-ACP-authored action claims are ordinary agent prose, not Sarah dispatcher receipts. The direct-Qwen backend retains its existing server-owned tool receipts. Do not treat ACP replies as verified physical action outcomes.
+ACP-authored action claims are ordinary agent prose, not Sarah dispatcher receipts. The direct-Qwen backend offers conversation only and rejects tool calls. Do not treat ACP replies as verified physical action outcomes.
 
 ## Dex integration
 

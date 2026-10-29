@@ -1,3 +1,5 @@
+> Historical upstream verification record. Counts and integrations below describe the upstream source before this fork removed the bridge dispatchers. Current fork validation is recorded in the repository-root validation documents and cleanup MR; these historical results are not current test counts.
+
 # Verification record — private review candidate
 
 No public release or public hosting is authorized by this record. The owner confirmed original authorship and selected MIT for the original project code; see ../LICENSE and ../LICENSE-STATUS.md. Third-party rights and binary distribution obligations remain separate and unaudited.

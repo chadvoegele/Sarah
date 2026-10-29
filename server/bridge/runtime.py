@@ -1,9 +1,8 @@
-"""OpenAI-compatible local-model voice; optional server-owned tool dispatch."""
+"""OpenAI-compatible local-model voice conversation without built-in tools."""
 import asyncio
 import os
 import json
 import re
-import sys
 import threading
 from pathlib import Path
 import httpx
@@ -191,7 +190,7 @@ class SpeechRuntime:
 
 class VoiceRuntime(SpeechRuntime):
     ready = True
-    reason = 'Local-model voice conversation; integrations disabled unless explicitly configured'
+    reason = 'Local-model voice conversation; no bridge-owned tools'
     def __init__(self, config=None):
         super().__init__()
         config = config or LLMConfig.from_env()
@@ -199,58 +198,22 @@ class VoiceRuntime(SpeechRuntime):
         self.api_key = config.api_key
         self.model = config.model
 
-    async def reply(self, text, history=(), dispatch=None):
-        # One deadline across all HTTP attempts, not a per-read timeout and not
-        # wait_for(to_thread(...)): cancellation closes the owned upstream socket.
+    async def reply(self, text, history=()):
+        # One total deadline; cancellation closes the owned upstream socket.
         deadline = asyncio.get_running_loop().time() + LLM_TOTAL_SECONDS
         async with asyncio.timeout_at(deadline):
-            inputs = list(history)+[{'role':'user','content':text}]
-            results = []
-            for _ in range(10):
-                try:
-                    result = await self._reply(text, history, deadline, inputs, dispatch is not None)
-                except Exception:
-                    if results: return 'I could not finish summarizing the tool results ('+type(sys.exc_info()[1]).__name__+').'
-                    raise
-                if isinstance(result, str):
-                    return result
-                if dispatch is None: raise RuntimeError('llm_tool_denied')
-                for call in result:
-                    try:
-                        outcome = await dispatch(call['name'], json.loads(call['arguments']))
-                    except (ValueError, TypeError, KeyError):
-                        outcome = {'reply':'Home Assistant request denied. Nothing dispatched.'}
-                    results.append(outcome)
-                    inputs.extend([call, {'type':'function_call_output','call_id':call['call_id'],'output':json.dumps(outcome)}])
-            return 'Tool request limit reached before I could finish the answer.'
+            return await self._reply(text, history, deadline)
 
-    async def _reply(self, text, history, deadline, inputs=None, tools=False):
-        from .ha import TOOLS as HA_TOOLS, LIGHT_GUIDANCE
-        from .siyuan import TOOLS as SY_TOOLS, GUIDANCE
-        from .calendar import TOOLS as CALENDAR_TOOLS, GUIDANCE as CALENDAR_GUIDANCE
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        calendar_clock=' Current server time in '+os.getenv('R1_TIMEZONE','UTC')+': '+datetime.now(ZoneInfo(os.getenv('R1_TIMEZONE','UTC'))).isoformat()+'. Resolve today/tomorrow against this clock, not training knowledge.'
-        from .tvtime import TOOLS as TVTIME_TOOLS, GUIDANCE as TVTIME_GUIDANCE
-        TOOLS=HA_TOOLS+SY_TOOLS+CALENDAR_TOOLS+TVTIME_TOOLS
-        instructions = ('You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. This identity applies only to this R1 instance. Converse naturally and reply briefly. Interpret free language and contextual followups from conversation; no command phrase or Home Assistant prefix is required. Tools are available on every turn, not mandatory. Ordinary discussion, quoted examples and negation are not action requests. Only supplied HA, SiYuan, Calendar and TV time functions exist. '+LIGHT_GUIDANCE+' '+GUIDANCE+' '+CALENDAR_GUIDANCE+' '+TVTIME_GUIDANCE+' Use ha_get_state for detailed current state, ha_list_services for actual service parameters, and ha_call_service for requested actions without repeated routine approval. No entity/action allowlist or spoken authorization gate applies. Never invent entities, service availability, tool outcomes or physical success. An accepted service is not necessarily a verified outcome. Use actual returned states and errors; do not automatically retry uncertain writes. No host shell, administration or arbitrary network tool exists.' if tools else 'You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. This identity applies only to this R1 instance. Reply briefly in plain spoken English. No tools or Home Assistant actions are available. Never claim actions were performed.')
-        if tools:
-            instructions += calendar_clock
-        messages = [{'role': 'system', 'content': instructions}]
-        for item in inputs if inputs is not None else list(history)+[{'role':'user','content':text}]:
-            if item.get('type') == 'function_call':
-                messages.append({'role':'assistant', 'content':None, 'tool_calls':[{
-                    'id':item['call_id'], 'type':'function',
-                    'function':{'name':item['name'], 'arguments':item['arguments']}}]})
-            elif item.get('type') == 'function_call_output':
-                messages.append({'role':'tool', 'tool_call_id':item['call_id'], 'content':item['output']})
-            else:
-                messages.append(item)
+    async def _reply(self, text, history, deadline):
+        instructions = (
+            'You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. '
+            'This identity applies only to this R1 instance. '
+            'Reply briefly in plain spoken English. No tools or actions are available. '
+            'Never claim actions were performed.')
+        messages = [{'role':'system', 'content':instructions}, *history,
+                    {'role':'user', 'content':text}]
         payload = {'model':self.model, 'messages':messages, 'stream':True,
                    'max_tokens':2048, 'chat_template_kwargs':{'enable_thinking':False}}
-        if tools:
-            payload.update(tools=[{'type':'function', 'function':{k:v for k,v in t.items() if k!='type'}} for t in TOOLS],
-                           tool_choice='auto', parallel_tool_calls=False)
         headers = {'Accept':'text/event-stream', 'Accept-Encoding':'identity'}
         if self.api_key:
             headers['Authorization'] = 'Bearer ' + self.api_key
@@ -261,7 +224,7 @@ class VoiceRuntime(SpeechRuntime):
                                      headers=headers, json=payload) as response:
                 if response.status_code != 200:
                     raise RuntimeError('llm_http_'+str(response.status_code))
-                parts=[]; calls={}; output_chars=0; completed=None
+                parts=[]; output_chars=0; completed=None
                 async for line in _sse_lines(response, deadline):
                     if not line.startswith('data:'):
                         continue
@@ -285,27 +248,13 @@ class VoiceRuntime(SpeechRuntime):
                         raise RuntimeError('reply_too_long')
                     parts.append(content)
                     # reasoning_content is intentionally never displayed/spoken.
-                    for chunk in delta.get('tool_calls') or []:
-                        if not tools or chunk.get('index')!=0 or chunk.get('type','function')!='function':
-                            raise RuntimeError('llm_tool_denied')
-                        call=calls.setdefault(0, {'type':'function_call','call_id':'','name':'','arguments':''})
-                        function=chunk.get('function') or {}
-                        for key,value in (('call_id',chunk.get('id','')),
-                                          ('name',function.get('name','')),
-                                          ('arguments',function.get('arguments',''))):
-                            if not isinstance(value,str):
-                                raise RuntimeError('llm_tool_denied')
-                            call[key]+=value
-                        if len(call['arguments'])>20000 or len(call['call_id'])>256 or len(call['name'])>100:
-                            raise RuntimeError('llm_tool_denied')
+                    if delta.get('tool_calls') or delta.get('function_call'):
+                        raise RuntimeError('llm_tool_denied')
                     if choice.get('finish_reason') is not None:
                         completed=choice['finish_reason']
                         break  # Terminal, even if upstream never sends EOF.
-        if calls:
-            call=calls[0]
-            if completed!='tool_calls' or not call['call_id'] or call['name'] not in {t['name'] for t in TOOLS}:
-                raise RuntimeError('llm_tool_denied')
-            return [call]
+        if completed in ('tool_calls', 'function_call'):
+            raise RuntimeError('llm_tool_denied')
         result=''.join(parts).strip()
         if completed!='stop' or not result:
             raise RuntimeError('llm_incomplete_response')

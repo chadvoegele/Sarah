@@ -1,3 +1,5 @@
+> Historical upstream announcement draft. Its Codex/Hermes and optional bridge integrations describe an earlier version. For current direct-model/ACP behavior, see [the fork README](../README.md).
+
 Made a thing: **S.A.R.A.H**, a little voice companion for an R1 running Ubuntu Touch.
 
 The name stands for **Self Actuated Residential Automated Habitat**, a nod to SARAH, the smart house from *Eureka*.

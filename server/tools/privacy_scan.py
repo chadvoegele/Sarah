@@ -17,7 +17,7 @@ FORBIDDEN_DIRS = {'.git', '.backups', '.state', '.build', 'evidence', 'artifacts
                   '__pycache__', '.pytest_cache', '.venv', '.verify', 'build', 'package'}
 FORBIDDEN_SUFFIXES = {'.pem', '.key', '.p12', '.pfx', '.db', '.sqlite', '.wav', '.mp3', '.mp4', '.png', '.jpg', '.click', '.log', '.pyc'}
 # GitHub hosts the explicitly pinned Docker speech dependencies.
-PUBLIC_HOSTS = {'github.com', 'chatgpt.com', 'gateway.maton.ai', 'www.w3.org', 'docs.aiohttp.org', 'docs.pytest.org'}
+PUBLIC_HOSTS = {'github.com', 'chatgpt.com', 'www.w3.org', 'docs.aiohttp.org', 'docs.pytest.org'}
 URL = re.compile(r'https?://[^\s\"\'<>`)]+')
 EMAIL = re.compile(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b')
 IPV4 = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')

@@ -13,25 +13,6 @@ def clock(hour,minute):
     if minute==0 and hour in (0,12): return 'midnight' if hour==0 else 'noon'
     return words(hour%12 or 12)+(' oh '+words(minute) if 0<minute<10 else ' '+words(minute) if minute else '')+(' A M' if hour<12 else ' P M')
 
-def central_event(event):
-    result=dict(event)
-    for key in ('start','end'):
-        value=event.get(key,{})
-        if value.get('dateTime'):
-            dt=datetime.fromisoformat(value['dateTime'].replace('Z','+00:00'))
-            if dt.tzinfo is not None:
-                result[key]=dict(value,dateTime=dt.astimezone(CENTRAL).isoformat(),timeZone=TIMEZONE)
-    return result
-
-def event_confirmation(verb,event):
-    title=event.get('summary') or 'event'
-    start=event.get('start',{})
-    if start.get('dateTime'):
-        dt=datetime.fromisoformat(start['dateTime'].replace('Z','+00:00')).astimezone(CENTRAL)
-        when=dt.strftime('%Y-%m-%d at ')+str(dt.hour%12 or 12)+dt.strftime(':%M %p')+' '+TIMEZONE
-    else: when=start.get('date')
-    return verb+' '+title+(' on '+when if when else '')+'.'
-
 _H=r'(?:[01]?\d|2[0-3])'
 _M=r'[0-5]\d'
 _AP=r'([ap])\.?\s*m\.?'
