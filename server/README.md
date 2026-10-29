@@ -12,7 +12,7 @@ From this directory, using Python 3.12 with `requirements.txt` and `requirements
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-Synthetic Unix/stdio/HTTP peers exercise production ACP and SpeechRuntime interfaces, including auth/ownership, idempotency, recovery, cancellation, deadlines, output limits, permission denial, metadata filtering and text-only replies. Stage source additions/deletions before the tracked-publication test. [Verification](docs/VERIFICATION.md) describes the publication gate; [current results](../VALIDATION.md) state validation limits.
+Synthetic Unix/stdio/HTTP peers exercise production ACP and SpeechRuntime interfaces, including auth/ownership, idempotency, recovery, cancellation, deadlines, output limits, permission denial, metadata filtering and text-only replies. Stage source additions/deletions before the tracked-publication test. [Verification](docs/VERIFICATION.md) describes the publication gate and validation limits.
 
 The bridge derives from `serexe/sarah-r1` at `9794c41b201cc97001e575cb28a72b54489148bb`. The inherited native client, power helper, packaging and direct-model runtime have been removed. Generic spoken Markdown/currency/clock formatting remains at the synthesis boundary. Legacy `R1_*` speech path/timezone names remain for deployment compatibility.
 

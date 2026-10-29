@@ -1,6 +1,6 @@
 # Verification and publication
 
-Chad's Agent — current server scope: local speech + ACP relay. See [repository validation](../../VALIDATION.md) for exact checks and limits. Earlier native-client/publication reports are superseded; upstream attribution and license notices remain.
+Chad's Agent — current server scope: local speech + ACP relay. Offline checks do not establish physical-device, live speech/agent or deployment behavior. Upstream attribution and license notices remain.
 
 Run Python tests with `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider`. Tests isolate configuration and reject non-loopback TCP connections, use temporary Unix ACP peers and disposable stdio/TTS children, and never need live model/tool calls. These controls are not a general sandbox for arbitrary future subprocesses.
 

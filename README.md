@@ -55,4 +55,4 @@ From `server/` with test dependencies installed:
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Validation](VALIDATION.md) records current results and limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.
+Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Verification](server/docs/VERIFICATION.md) describes publication checks and their limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.

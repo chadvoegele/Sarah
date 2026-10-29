@@ -1,27 +1,37 @@
-# S.A.R.A.H Android — active development
+# S.A.R.A.H Android
 
-**This is the current Android S.A.R.A.H voice-assistant development repository, not a historical-only archive.** The Kotlin/Compose client connects to a separately operated HTTPS voice bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. Current code23–26 work includes adaptive speech endpointing, wake-stage fixes, and the code26 softer mic-ready cue. Josh tested the code26 review APK on his phone, reported “Much better,” and approved committing this version. The current source is a **review checkpoint**, not a new release/tag, production promotion, or reproduced APK. See [CODE26-CHECKPOINT.md](CODE26-CHECKPOINT.md) for exact artifact association and proof limits; [CODE22-REVIEW.md](CODE22-REVIEW.md) and older code8 assets remain historical.
+Kotlin/Compose voice-assistant client for a separately operated HTTPS Sarah bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. This is development source, not a new APK release or a reproducibility claim.
 
 ## This fork
 
-Chad's Agent — the server now uses ACP only. Basic protocol-1 voice/settings/playback/conversation behavior stays compatible with existing clients. The unused bridge integration-confirmation method/UI has been removed; unknown or historical confirmation outcomes stay uncertain and never trigger approval or resend. Health needs only protocol/readiness; obsolete integration capability flags are no longer supplied. Android JNI keyword/capture code and its licenses remain required. Version/signing/dependencies are unchanged; this source cleanup is not a newly released APK. Current build/test results are in [repository validation](../VALIDATION.md); the checkpoint and counts below are upstream history.
+Chad's Agent — the server uses ACP only. Basic protocol-1 voice/settings/playback/conversation behavior stays compatible with existing clients. The unused bridge integration-confirmation method/UI has been removed; unknown or historical confirmation outcomes stay uncertain and never trigger approval or resend. Health needs only protocol/readiness. Android JNI keyword/capture code and its licenses remain required. Version, signing and dependencies are unchanged.
 
-## What this source does
+## Behavior
 
 - Foreground tap-to-talk, encrypted local pairing state, authenticated HTTPS bridge health/upload and reply playback; unknown upload admission is not blindly retried.
-- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture, and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
-- Code21 corrected an offscreen cleanup owner-reference error (`this@OffscreenCommand`) after native ACK. Later source adds adaptive endpointing and wake-stage handling; no-speech or 30-second cap discards. The code26 softer cue starts after native recording reports ready and drains its acoustic tail before retaining command PCM. Phone feedback is subjective; code26 automated runtime/endpoint proof was not run.
+- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
+- Adaptive speech endpointing; no-speech or 30-second cap discards. The mic-ready cue starts after native recording reports ready and drains its acoustic tail before retaining command PCM.
 
-Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is published.
+Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is included.
 
-## Build source and limits
+## Build and test
 
-JDK 17, Android SDK 35 and Gradle 8.11.1 wrapper. The **compiled upstream sherpa-onnx AAR is intentionally not in Git**. Retrieve the official v2.0.1 artifact from the URL in [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7` before building; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notice texts are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
+Use JDK 17, Android SDK 35 and the Gradle 8.11.1 wrapper. The compiled sherpa-onnx AAR is intentionally not in Git. Retrieve the official v2.0.1 artifact from [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7`; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notices are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
 
-`app/build.gradle.kts` retains its local review signing configuration, which reads `.local-review/review.jks` and `.local-review/signing-pass`. Those files are private and absent. A separately approved local signer is required for the configured signed debug build; do not regenerate or publish the phone-approved signer. Do not treat a locally rebuilt APK as identical to the reviewed code26 APK. Android instrumentation/device-fixture tests are omitted from this public current snapshot because their audio fixtures and test-server PKCS#12 private key are excluded. Historical `ScreenshotPolicyTest.kt` remains from code3; published unit tests under `app/src/test/` are source only. The code26 development report records 155 passing unit tests and successful lint/build; no tests or build were rerun for this publication. Build and test histories refer to the separate local development workspace, not this checkout.
+`app/build.gradle.kts` reads private `.local-review/review.jks` and `.local-review/signing-pass` files for signed debug builds. Supply your own local signing inputs outside Git; never publish a signer or password. A locally rebuilt APK is not claimed identical to an upstream review APK.
 
-## Repository history and licensing
+With these prerequisites installed, run from `android/`:
 
-This checkpoint preserves prior commits, screenshots, `CODE3-*` records, code21/22 publication records, existing historical releases/assets, and historical code8 [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and `notices/` tree. **Historical identity/checksum assertions in those documents still refer to code8.** Existing third-party notices and Eigen covered-source downloads remain linked without claiming an exhaustive SBOM or legal certification. Older [docs/screenshots](docs/screenshots/) images show code3 only.
+```sh
+./gradlew testDebugUnitTest lintDebug assembleDebug
+```
 
-Owner-controlled source/artwork: [MIT LICENSE](LICENSE); third-party components and model keep separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies; `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its ThirdPartyNotices. No APK or compiled native AAR is committed to Git; code26 APK was reviewed privately, not published by this source checkpoint or claimed bit-reproducible.
+Unit tests use synthetic fixtures. Historical `ScreenshotPolicyTest.kt` remains, but private audio/instrumentation fixtures and test-server keys are not included. Offline tests do not establish physical-device, acoustic, background/OEM, live bridge or end-to-end reliability.
+
+## Licensing and upstream records
+
+Owner-controlled source/artwork: [MIT LICENSE](LICENSE). Third-party components and models retain separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies. `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its third-party notices.
+
+Preserved upstream [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), [RELEASE-NOTES.md](RELEASE-NOTES.md), checksum manifests and `notices/` concern the separate historical code8 artifact where stated, not an APK built from this tree. Eigen covered-source downloads remain linked. These records are not an exhaustive SBOM or legal certification. [Screenshots](docs/screenshots/PROVENANCE.md) show historical code3 only. [Code3 third-party notices](CODE3-THIRD-PARTY-NOTICES.md) and the Gradle license remain preserved.
+
+No APK or compiled native AAR is committed. Upstream attribution is in the [repository README](../README.md).
