@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import ipaddress
 import ssl
 import time
 from collections import defaultdict, deque
@@ -13,6 +14,8 @@ from .core import UnconfiguredRuntime, Conflict, Denied, Store, validate_audio, 
 
 def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None):
     adapter = adapter or UnconfiguredRuntime()
+    if getattr(adapter, 'backend', None) == 'acp' and any(b is not None for b in (ha,siyuan,calendar,tvtime)):
+        raise ValueError('ACP backend cannot use bridge-owned integrations; configure tools on the agent')
     buckets=defaultdict(deque); tasks={}; confirmations={}
     media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
     @web.middleware
@@ -41,7 +44,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         if siyuan is not None: reason+=' SiYuan discovery/search/read/create/stable-ID update/append/edit and exact childless document deletion; writes verified by readback, deletion locally backed up. Private and root zArchive excluded.'
         if calendar is not None: reason+=' Calendar enabled for explicitly configured scope; list/read/create/update/exact delete with readback. Configuration is not live scope verification.'
         if tvtime is not None: reason+=' TV time ON uses existing canonical workflow once; webhook accepted is not device readiness proof.'
-        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'tools':any(b is not None for b in (ha,siyuan,calendar,tvtime)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None})
+        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'backend':getattr(adapter,'backend','llm'),'tools':any(b is not None for b in (ha,siyuan,calendar,tvtime)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None})
     async def conversation(request):
         await body(request,[])
         return web.json_response({'conversation':store.conversation(request['device'])},status=201)
@@ -94,7 +97,10 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                 return outcome
             # Every utterance reaches the model with the same supported tools.
             # Semantic intent belongs to the model, not a local phrase classifier.
-            text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
+            if hasattr(adapter, 'reply_turn'):
+                text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation)
+            else:
+                text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
             if not active(device,turn):return
             # Actual dispatch outcomes remain server-owned. With no tool outcome,
             # preserve conversation/clarification exactly; never invent an action
@@ -164,6 +170,8 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         turn=request.match_info['turn'];result=store.cancel(request['device'],turn)
         pending=confirmations.get(turn)
         if pending and not pending[3].done(): pending[3].set_result(False)
+        task=tasks.get(turn)
+        if task is not None and getattr(adapter,'cancel_on_request',False): task.cancel()
         return web.json_response(result)
     async def cleanup(app):
         pending=list(tasks.values())
@@ -177,15 +185,31 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
     app.router.add_post('/v1/turns/{turn}/confirmation',confirmation)
     return app
 
-def main():
+def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
+    p.add_argument('--db',type=Path,required=True)
+    p.add_argument('--cert');p.add_argument('--key')
+    p.add_argument('--http',action='store_true',help='Explicit loopback-only HTTP behind a trusted TLS proxy')
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
-    args=p.parse_args();store=Store(args.db);store.recover()
-    from .runtime import VoiceRuntime
-    adapter=VoiceRuntime()
-    tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
-    tls.load_cert_chain(args.cert,args.key)
+    args=p.parse_args(argv)
+    if args.http:
+        try: loopback=ipaddress.ip_address(args.bind).is_loopback
+        except ValueError: loopback=False
+        if not loopback: p.error('--http requires a literal loopback bind address')
+        if args.cert or args.key: p.error('--http cannot be combined with TLS certificate/key options')
+    elif not args.cert or not args.key:
+        p.error('--cert and --key are required unless --http is explicitly selected')
+    return args
+
+
+def main():
+    args=parse_args();store=Store(args.db);store.recover()
+    from .acp_runtime import create_runtime
+    adapter=create_runtime(store)
+    tls=None
+    if not args.http:
+        tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
+        tls.load_cert_chain(args.cert,args.key)
     from .ha import HADispatcher
     from .siyuan import SiYuanDispatcher
     from .calendar import CalendarDispatcher
