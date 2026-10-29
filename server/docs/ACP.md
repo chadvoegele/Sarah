@@ -45,7 +45,7 @@ To return to Qwen, set `SARAH_BACKEND=llm`; existing `SARAH_LLM_*` configuration
 - A failed load never falls back to `session/new`. An inflight, interrupted, timed-out, disconnected or cancelled prompt leaves its binding uncertain and blocks further prompts in that conversation. Start a new conversation deliberately; no automatic replay/retry or transfer to Qwen.
 - HTTP cancellation sends `session/cancel` best-effort, closes the connection and cleans up owned processes. Cancellation is **not rollback** and does not prove agent tools stopped or undo their effects. Agent-side session/history deletion is not implemented.
 
-Only `agent_message_chunk` text received during the active prompt is retained/spoken. Thoughts, tools, usage, startup text and replayed history are not. A complete nonempty answer requires `stopReason=end_turn`; partial/refused/cancelled/length-limited turns fail closed. Frames, total bytes, frame count, answer length and total runtime are bounded. Upstream errors/payloads are not included in device error messages.
+Only `agent_message_chunk` text received during the active prompt is retained/spoken. Pi's advertised startup prelude and typed extension/UI notifications are filtered even when they arrive after a prompt begins. Thoughts, tools, usage, startup text and replayed history are not. A complete nonempty answer requires `stopReason=end_turn`; partial/refused/cancelled/length-limited turns fail closed. Frames, total bytes, frame count, answer length and total runtime are bounded. Upstream errors/payloads are not included in device error messages.
 
 ## Tool trust boundary
 

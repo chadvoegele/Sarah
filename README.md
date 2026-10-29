@@ -18,6 +18,10 @@ Android → HTTPS bridge → local Whisper → Qwen chat/completions
 
 Set `SARAH_BACKEND=acp`, `SARAH_ACP_CWD` to the agent's absolute working directory, and `SARAH_ACP_SOCKET` to its Unix socket. Alternatively set `SARAH_ACP_COMMAND` to a JSON argv array for a stdio agent. [ACP setup and security](server/docs/ACP.md) covers dedicated persistent conversation sessions, cancellation, denied client permission requests, and future Dex socket-volume access. This does not deploy or change Dex; an ACP agent's own tools retain its configured privileges.
 
+## Reverse proxy / Docker
+
+The server includes a container image and an explicit loopback-only HTTP mode for use behind a trusted HTTPS proxy. It reuses the existing device Bearer token as the API key; no Basic-auth layer or APK change is required. See [proxy and provisioning setup](server/docs/PROXY.md). Keep direct TLS as the default outside that topology.
+
 ## Server setup
 
 Requires Python 3.12, FFmpeg for MP3, local speech assets, and an OpenAI-compatible chat-completions server (such as llama.cpp).

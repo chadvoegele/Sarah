@@ -89,3 +89,9 @@ bridge/acp_runtime.py
 docs/ACP.md
 tests/test_acp.py
 tests/test_acp_config.py
+.dockerignore
+Dockerfile
+docker-entrypoint.sh
+bridge/provision_device.py
+tests/test_proxy_deployment.py
+docs/PROXY.md

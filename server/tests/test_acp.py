@@ -76,6 +76,8 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
                     sid = 'voice-'+str(len(self.sessions)+1)
                     if self.mode == 'bad_sid': sid = ''
                     self.sessions.add(sid); result = {'sessionId':sid}
+                    if self.mode == 'late_startup':
+                        result['_meta'] = {'piAcp':{'startupInfo':'Delayed startup must not be spoken.'}}
                     await self.update(writer, sid, 'Startup text must not be spoken.')
                 elif method == 'session/load':
                     self.assertIn(params['sessionId'], self.sessions)
@@ -84,6 +86,11 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
                 elif method == 'session/prompt':
                     self.started.set()
                     sid = params['sessionId']; text = params['prompt'][0]['text']
+                    if self.mode == 'late_startup':
+                        await self.update(writer, sid, 'Delayed startup must not be spoken.')
+                        await self.emit(writer, {'method':'session/update','params':{'sessionId':sid,
+                            'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'MCP startup banner'},
+                                      '_meta':{'piAcp':{'notify':{'level':'info'}}}}}})
                     if self.mode == 'stall': continue
                     if self.mode == 'drop': return
                     if self.mode == 'bad_json':
@@ -126,6 +133,11 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[2]['params']['prompt'], [{'type':'text','text':'hello'}])
         self.assertEqual(self.binding()['state'], 'ready')
         await asyncio.wait_for(self.closed.wait(), 1)
+
+    async def test_late_advertised_startup_and_extension_notifications_not_spoken(self):
+        self.mode = 'late_startup'
+        self.assertEqual(await self.reply(), 'Reply: hello café')
+        self.assertEqual(self.binding()['state'], 'ready')
 
     async def test_persistent_session_load_without_history_replay(self):
         await self.reply('first')
