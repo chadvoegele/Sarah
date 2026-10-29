@@ -1,0 +1,3 @@
+# Optional isolated Kokoro worker environment; assets must be obtained separately.
+kokoro-onnx==0.5.0
+soundfile==0.13.1

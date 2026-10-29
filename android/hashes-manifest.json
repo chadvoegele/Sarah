@@ -1,0 +1,230 @@
+{
+  "format": "sha256",
+  "files": [
+    {
+      "path": "COVERED-SOURCE.md",
+      "size": 4362,
+      "sha256": "a02881b15509f51416a7553b8ce78c0176c8512f6e517cd4f7000b31e49a53d3"
+    },
+    {
+      "path": "LICENSE",
+      "size": 1063,
+      "sha256": "a02919171d250862e3a5cf43eaac65de5f61fd1754dcc106a0deb376aee8d76e"
+    },
+    {
+      "path": "README.md",
+      "size": 4293,
+      "sha256": "04d64bce66c0d2b7881607d7de96084e53c81e4e0d92f601b7e90d3019af3987"
+    },
+    {
+      "path": "RELEASE-NOTES.md",
+      "size": 4117,
+      "sha256": "b57235d36b4252300d461b42320603f7ce035c8c99d0d4adb20ca28e08434017"
+    },
+    {
+      "path": "SHA256SUMS",
+      "size": 120,
+      "sha256": "1350c47c28a3da4b292731380e45d822646b9256835e5fe7af0362d3550bab90"
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "size": 6833,
+      "sha256": "c759414a3abb3787f2dacb0f770276297d8e786a6dcaa3e521866b25deda78ef"
+    },
+    {
+      "path": "notices/META-INF/androidx/annotation/annotation/LICENSE.txt",
+      "size": 10175,
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "notices/META-INF/androidx/collection/collection/LICENSE.txt",
+      "size": 10175,
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "notices/META-INF/androidx/collection/collection-ktx/LICENSE.txt",
+      "size": 10175,
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "notices/META-INF/androidx/lifecycle/lifecycle-common/LICENSE.txt",
+      "size": 10175,
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "notices/META-INF/androidx/lifecycle/lifecycle-common-java8/LICENSE.txt",
+      "size": 10175,
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "notices/THIRD-PARTY-HEADER-NOTICES.txt",
+      "size": 236777,
+      "sha256": "6c6d9cac4ca7ea9b8b79f8a18d50c39403d8a57e48e63a8f3516f91e954859ab"
+    },
+    {
+      "path": "notices/assets/kws/README.md",
+      "size": 726,
+      "sha256": "74e42d37d63acd2366b042151d576fcc0c4917a41de339414a37f1e79f4e80e2"
+    },
+    {
+      "path": "notices/assets/kws/notes.md",
+      "size": 699,
+      "sha256": "ad16fd8358e5f207de27554f32603fcdd7557d38994fef99385bd3d4f425eb60"
+    },
+    {
+      "path": "notices/assets/licenses/onnxruntime-LICENSE.txt",
+      "size": 1073,
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+    },
+    {
+      "path": "notices/assets/licenses/onnxruntime-ThirdPartyNotices.txt",
+      "size": 325054,
+      "sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2"
+    },
+    {
+      "path": "notices/assets/licenses/onnxruntime-build.cmake",
+      "size": 9704,
+      "sha256": "00f4d52e6583022aae06f509243f9a02ee7a5a31f4f62fc4cce12047dfac7860"
+    },
+    {
+      "path": "notices/assets/licenses/sherpa-onnx-APACHE-2.0.txt",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/eigen/COPYING.APACHE",
+      "size": 11362,
+      "sha256": "03379001a7b12a2ec997a25554247d985270b353c10d5bafee9ac8d6519820b7"
+    },
+    {
+      "path": "notices/eigen/COPYING.BSD",
+      "size": 1517,
+      "sha256": "51928dce36213c5333ba3172e847d735d4c6e9b7ff2722a326c49067155b82eb"
+    },
+    {
+      "path": "notices/eigen/COPYING.MINPACK",
+      "size": 2193,
+      "sha256": "c87b7f8ee88f6195e91743820c00354833583aef091b72e2d4a49c8e28e798a0"
+    },
+    {
+      "path": "notices/eigen/COPYING.MPL2",
+      "size": 16727,
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+    },
+    {
+      "path": "notices/eigen/COPYING.README",
+      "size": 264,
+      "sha256": "db640ff2bd90c6abd6a4d3fbb351e0ee4d555417cf840492054d1cbb2ea85644"
+    },
+    {
+      "path": "notices/eigen/LICENSE",
+      "size": 16725,
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "path": "notices/okhttp3/internal/publicsuffix/NOTICE",
+      "size": 218,
+      "sha256": "8a9c58fbded5ea3474315e4a9824ca8b1486098a1a03e897e0b19419d5e1876a"
+    },
+    {
+      "path": "notices/upstream/coroutines-LICENSE",
+      "size": 11398,
+      "sha256": "b1febe6399dffb10d19d35e7663ab16300c93cb0476a94115df1cc0097a8ffd8"
+    },
+    {
+      "path": "notices/upstream/json-LICENSE",
+      "size": 1076,
+      "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
+    },
+    {
+      "path": "notices/upstream/kotlin-LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/upstream/okhttp-LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/upstream/okio-LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/upstream-static/decoder-archive/kaldi-decoder-0.3.0/LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/upstream-static/fbank-archive/kaldi-native-fbank-1.22.4/LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "notices/upstream-static/fst-archive/openfst-1.8.5-2026-07-09/COPYING",
+      "size": 559,
+      "sha256": "4300529197035fd3452350718a0b8cee984e9412c9932d7f35fcde849fc97a4b"
+    },
+    {
+      "path": "notices/upstream-static/hclust-archive/hclust-cpp-2026-02-25/LICENSE",
+      "size": 1483,
+      "sha256": "e361d842da1d290351860ad6dcce2673a1e42e4f873a3ae1ff4eb92c6adaa882"
+    },
+    {
+      "path": "notices/upstream-static/kaldifst-archive/kaldifst-1.8.0/LICENSE",
+      "size": 11728,
+      "sha256": "a682d6efd1ee5dee08a8e405c233c2c198ea70ae0718129daa83ab58cfe31c5d"
+    },
+    {
+      "path": "notices/upstream-static/kissfft-archive/kissfft-febd4caeed32e33ad8b2e0bb5ea77542c40f18ec/COPYING",
+      "size": 246,
+      "sha256": "a2840585f8411be8e6826a31ef15ae65c950bd74a2437a73b013398a934ad0c6"
+    },
+    {
+      "path": "notices/upstream-static/kissfft-archive/kissfft-febd4caeed32e33ad8b2e0bb5ea77542c40f18ec/LICENSES/BSD-3-Clause",
+      "size": 1830,
+      "sha256": "4d6bcab46f27d6d0c878e8305d4bdcfe040d52bf6656b9771f04c9fb9902c0ed"
+    },
+    {
+      "path": "notices/upstream-static/kissfft-archive/kissfft-febd4caeed32e33ad8b2e0bb5ea77542c40f18ec/LICENSES/Unlicense",
+      "size": 1521,
+      "sha256": "c543dab3c100d8741a83b02f397746b1e10fc0046f30b942f308191a68e99407"
+    },
+    {
+      "path": "notices/upstream-static/sp-archive/simple-sentencepiece-0.7/LICENSE",
+      "size": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "notices/upstream-static/utf8-archive/utf8proc-2.12.0/LICENSE.md",
+      "size": 5125,
+      "sha256": "3b510150d34f248a221bb88e1d811238d6c6c18b51231822c42974c39bb07256"
+    },
+    {
+      "path": "sarah-code8-playback-repaired-arm64-x86_64-review.apk",
+      "size": 83050988,
+      "sha256": "4cb4efa8e6ba13f9eee7154830b84237cecfe8f94a7b9102a278df8e842f93f4"
+    },
+    {
+      "path": "sarah-code8-redistribution-notices.tar.gz",
+      "size": 78233,
+      "sha256": "b3a67f20f2b3ae774b515d418c10ac4d0dc5153119506862eae882cd8b7754ca"
+    },
+    {
+      "path": "sources/eigen-3.4.0.tar.gz",
+      "size": 2705005,
+      "sha256": "8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72"
+    },
+    {
+      "path": "sources/eigen-5.0.1.tar.gz",
+      "size": 2967272,
+      "sha256": "e9c326dc8c05cd1e044c71f30f1b2e34a6161a3b6ecf445d56b53ff1669e3dec"
+    },
+    {
+      "path": "sources/eigen-onnxruntime-1.28.2-covered-source.tar.gz",
+      "size": 2917258,
+      "sha256": "06bdbd601b6d10b782c36ca06f20464abdcb4a5e40665b5f2294b9a91180977d"
+    }
+  ]
+}
