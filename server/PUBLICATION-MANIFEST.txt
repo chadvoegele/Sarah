@@ -2,10 +2,8 @@
 .gitignore
 Dockerfile
 LICENSE
-LICENSE-STATUS.md
 PUBLICATION-MANIFEST.txt
 README.md
-SECURITY.md
 THIRD-PARTY-NOTICES.md
 bridge/__init__.py
 bridge/acp_client.py
@@ -18,12 +16,6 @@ bridge/runtime.py
 bridge/server.py
 config/bridge.env.example
 docker-entrypoint.sh
-docs/ACP.md
-docs/ARCHITECTURE.md
-docs/CONFIGURATION.md
-docs/PROXY.md
-docs/SETUP.md
-docs/VERIFICATION.md
 requirements-dev.txt
 requirements-tts.txt
 requirements.txt

@@ -35,9 +35,9 @@ umask 077
   --bind 127.0.0.1 --port 8787
 ```
 
-Provision local speech assets explicitly; runtime never downloads or uses cloud speech. See [server setup](server/docs/SETUP.md) and [configuration](server/docs/CONFIGURATION.md). A JSON argv `SARAH_ACP_COMMAND` can replace the socket transport. Agent credentials and permissions belong to the agent.
+Provision local speech assets explicitly; runtime never downloads or uses cloud speech. See the [server README](server/README.md) for setup and configuration. A JSON argv `SARAH_ACP_COMMAND` can replace the socket transport. Agent credentials and permissions belong to the agent.
 
-The default listener is loopback. For phone access, configure deliberate routing, firewall and hostname-valid TLS. [Docker and reverse proxy setup](server/docs/PROXY.md) retains the existing image/entrypoint, API-key file provisioning and explicit loopback HTTP behind nginx. Android uses an HTTPS origin and the same revocable device Bearer token, with an optional explicitly imported private CA. [Android build prerequisites](android/README.md) include an external pinned AAR and private review signing configuration.
+The default listener is loopback. For phone access, configure deliberate routing, firewall and hostname-valid TLS. [Docker and reverse proxy setup](server/README.md#docker-and-tls-proxy) retains the existing image/entrypoint, API-key file provisioning and explicit loopback HTTP behind nginx. Android uses an HTTPS origin and the same revocable device Bearer token, with an optional explicitly imported private CA. [Android build prerequisites](android/README.md) include an external pinned AAR and private review signing configuration.
 
 ## Compatibility and recovery
 
@@ -45,7 +45,7 @@ Protocol 1 basic voice remains: authenticated health, conversation creation, WAV
 
 ACP is now the default and only backend. `SARAH_BACKEND=llm` or any unsupported selection fails startup. Remove obsolete direct-model settings from private configuration and configure an ACP transport; prior direct-model conversations require an explicitly created new conversation. Existing ACP session bindings and device keys remain valid. There is no destructive database migration or automatic key rotation; old integration tables remain inert.
 
-Session identity is persisted before prompting, then reloaded for followups. Uncertain/interrupted outcomes never cause replay or a replacement session. Backend identity changes fail closed. Cancellation cannot undo agent actions. ACP agents retain their own privileges; Sarah denies client permission/delegated filesystem/terminal requests, which is not an agent sandbox. See [ACP trust and recovery](server/docs/ACP.md) and [security](server/SECURITY.md).
+Session identity is persisted before prompting, then reloaded for followups. Uncertain/interrupted outcomes never cause replay or a replacement session. Backend identity changes fail closed. Cancellation cannot undo agent actions. ACP agents retain their own privileges; Sarah denies client permission/delegated filesystem/terminal requests, which is not an agent sandbox. See [protocol and security](server/README.md#protocol-and-security).
 
 ## Validation
 
@@ -55,4 +55,4 @@ From `server/` with test dependencies installed:
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Verification](server/docs/VERIFICATION.md) describes publication checks and their limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.
+Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Verification](server/README.md#verification-and-publication) describes publication checks and their limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.

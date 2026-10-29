@@ -16,7 +16,7 @@ Microphone requires opt-in/permission. Do not put provider or home secrets on th
 
 ## Build and test
 
-Use JDK 17, Android SDK 35 and the Gradle 8.11.1 wrapper. The compiled sherpa-onnx AAR is intentionally not in Git. Retrieve the official v2.0.1 artifact from [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7`; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notices are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
+Use JDK 17, Android SDK 35 and the Gradle 8.11.1 wrapper. The compiled sherpa-onnx AAR is intentionally not in Git. Retrieve the official v2.0.1 artifact from [third-party notices](THIRD-PARTY-NOTICES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7`; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notices are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
 
 `app/build.gradle.kts` reads private `.local-review/review.jks` and `.local-review/signing-pass` files for signed debug builds. Supply your own local signing inputs outside Git; never publish a signer or password. A locally rebuilt APK is not claimed identical to an upstream review APK.
 
@@ -30,8 +30,8 @@ Unit tests use synthetic fixtures. Historical `ScreenshotPolicyTest.kt` remains,
 
 ## Licensing and upstream records
 
-Owner-controlled source/artwork: [MIT LICENSE](LICENSE). Third-party components and models retain separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies. `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its third-party notices.
+Owner-controlled source/artwork: [MIT LICENSE](LICENSE). Third-party components and models retain separate terms. [Third-party notices](THIRD-PARTY-NOTICES.md) record sherpa/model provenance and declared dependency license families. `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its third-party notices.
 
-Preserved upstream [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), [RELEASE-NOTES.md](RELEASE-NOTES.md), checksum manifests and `notices/` concern the separate historical code8 artifact where stated, not an APK built from this tree. Eigen covered-source downloads remain linked. These records are not an exhaustive SBOM or legal certification. [Screenshots](docs/screenshots/PROVENANCE.md) show historical code3 only. [Code3 third-party notices](CODE3-THIRD-PARTY-NOTICES.md) and the Gradle license remain preserved.
+Preserved upstream [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and checksum manifests and `notices/` concern the separate historical code8 artifact where stated, not an APK built from this tree. Eigen covered-source downloads remain linked. These records are not an exhaustive SBOM or legal certification. Images under `docs/screenshots/` are historical code3 emulator captures with synthetic transcript text, not current device or live-service proof. Original launcher artwork retains C2PA generated-media provenance, not user credentials. [Code3 third-party notices](CODE3-THIRD-PARTY-NOTICES.md) and the Gradle license remain preserved.
 
 No APK or compiled native AAR is committed. Upstream attribution is in the [repository README](../README.md).
