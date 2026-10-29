@@ -79,6 +79,7 @@ class ACPClient:
         self.collecting = False
         self.parts = []
         self.answer_chars = 0
+        self.startup_info = None
 
     @classmethod
     async def connect(cls, config):
@@ -140,7 +141,13 @@ class ACPClient:
                 raise ACPError('acp_request_failed')
             if not isinstance(message.get('result'), dict):
                 raise ACPError('acp_invalid_result')
-            return message['result']
+            result = message['result']
+            if method in ('session/new', 'session/load'):
+                metadata = result.get('_meta')
+                pi = metadata.get('piAcp') if isinstance(metadata, dict) else None
+                startup = pi.get('startupInfo') if isinstance(pi, dict) else None
+                self.startup_info = startup if isinstance(startup, str) else None
+            return result
 
     async def handle_agent(self, message):
         method = message['method']
@@ -161,12 +168,21 @@ class ACPClient:
             raise ACPError('acp_invalid_update')
         if update.get('sessionUpdate') != 'agent_message_chunk':
             return  # Never speak thoughts, tool results, usage or command metadata.
+        metadata = update.get('_meta')
+        pi = metadata.get('piAcp') if isinstance(metadata, dict) else None
+        if isinstance(pi, dict) and 'notify' in pi:
+            return  # pi extension/UI notifications are not assistant answers.
         content = update.get('content')
         if not isinstance(content, dict) or content.get('type') != 'text':
             return
         text = content.get('text')
         if not isinstance(text, str):
             raise ACPError('acp_invalid_text')
+        if text == self.startup_info:
+            # pi-acp advertises this exact prelude in session/new metadata but
+            # may deliver it only after the first prompt has already started.
+            self.startup_info = None
+            return
         self.answer_chars += len(text)
         if self.answer_chars > self.ANSWER_CHARS:
             raise ACPError('acp_answer_limit')

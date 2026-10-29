@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import ipaddress
 import ssl
 import time
 from collections import defaultdict, deque
@@ -184,15 +185,31 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
     app.router.add_post('/v1/turns/{turn}/confirmation',confirmation)
     return app
 
-def main():
+def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
+    p.add_argument('--db',type=Path,required=True)
+    p.add_argument('--cert');p.add_argument('--key')
+    p.add_argument('--http',action='store_true',help='Explicit loopback-only HTTP behind a trusted TLS proxy')
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
-    args=p.parse_args();store=Store(args.db);store.recover()
+    args=p.parse_args(argv)
+    if args.http:
+        try: loopback=ipaddress.ip_address(args.bind).is_loopback
+        except ValueError: loopback=False
+        if not loopback: p.error('--http requires a literal loopback bind address')
+        if args.cert or args.key: p.error('--http cannot be combined with TLS certificate/key options')
+    elif not args.cert or not args.key:
+        p.error('--cert and --key are required unless --http is explicitly selected')
+    return args
+
+
+def main():
+    args=parse_args();store=Store(args.db);store.recover()
     from .acp_runtime import create_runtime
     adapter=create_runtime(store)
-    tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
-    tls.load_cert_chain(args.cert,args.key)
+    tls=None
+    if not args.http:
+        tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
+        tls.load_cert_chain(args.cert,args.key)
     from .ha import HADispatcher
     from .siyuan import SiYuanDispatcher
     from .calendar import CalendarDispatcher
