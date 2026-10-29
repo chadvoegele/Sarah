@@ -1,6 +1,6 @@
 {
  "name":"hermes-touch-voice.local",
- "description":"S.A.R.A.H Codex voice companion — local speech with opt-in integrations",
+ "description":"S.A.R.A.H voice companion — local speech with direct-model or ACP conversation",
  "architecture":"arm64",
  "title":"S.A.R.A.H",
  "hooks":{"voice":{"apparmor":"voice.apparmor","desktop":"voice.desktop"}},

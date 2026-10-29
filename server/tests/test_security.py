@@ -51,24 +51,29 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.s.get('device-a',one)['state'],'uncertain')
         self.assertEqual(one,self.s.admit('device-a',self.c,'req-1','hash'))
         with self.assertRaises(Conflict):self.s.admit('device-a',self.c,'req-2','hash')
-    def test_confirmation_bound_atomic_single_use(self):
-        one=self.s.admit('device-a',self.c,'req-1','hash')
-        action={'tool':'ha_call_service','domain':'lock','service':'unlock','entity_id':'lock.front'}
-        nonce=self.s.offer('device-a',one,action,now=100)
-        for dev,run,act,t in [('device-b',one,action,101),('device-a',one,{**action,'entity_id':'lock.back'},101),('device-a',one,action,161)]:
-            with self.assertRaises(Denied):self.s.claim(dev,run,nonce,act,now=t)
-        self.s.claim('device-a',one,nonce,action,now=101)
-        with self.assertRaises(Denied):self.s.claim('device-a',one,nonce,action,now=102)
-    def test_cancel_invalidates_pending_confirmation(self):
-        one=self.s.admit('device-a',self.c,'req-1','hash')
-        action={'tool':'ha_call_service','domain':'lock','service':'unlock','entity_id':'lock.front'}
-        nonce=self.s.offer('device-a',one,action,now=100)
-        self.s.cancel('device-a',one)
-        with self.assertRaises(Denied):self.s.claim('device-a',one,nonce,action,now=101)
-    def test_terminal_cannot_offer_confirmation(self):
-        one=self.s.admit('device-a',self.c,'req-1','hash')
-        self.s.finish('device-a',one,'error','blocked')
-        with self.assertRaises(Denied):self.s.offer('device-a',one,{'tool':'anything'},now=100)
+    def test_legacy_database_reopens_without_data_loss_or_replay(self):
+        # Synthetic old tables may contain audit history. Removing helpers must
+        # neither require destructive migration nor revive an interrupted action.
+        self.s.db.executescript("""
+            CREATE TABLE approvals(nonce TEXT PRIMARY KEY, device TEXT, turn TEXT,
+                action TEXT, expires REAL, used INTEGER);
+            CREATE TABLE dispatches(device TEXT, turn TEXT, conversation TEXT, action TEXT,
+                PRIMARY KEY(device,turn,action));
+        """)
+        turn = self.s.admit('device-a',self.c,'legacy','hash')
+        self.s.db.execute("UPDATE turns SET state='confirming' WHERE id=?", (turn,))
+        self.s.db.execute('INSERT INTO approvals VALUES(?,?,?,?,?,?)',
+                          ('synthetic','device-a',turn,'{}',100,0))
+        self.s.db.execute('INSERT INTO dispatches VALUES(?,?,?,?)',
+                          ('device-a',turn,self.c,'{}'))
+        self.s.close(); self.s = Store(self.path); self.s.recover()
+        self.assertEqual(self.s.authenticate('a'*48),'device-a')
+        self.assertEqual(self.s.get('device-a',turn)['state'],'uncertain')
+        self.assertEqual(self.s.admit('device-a',self.c,'legacy','hash'),turn)
+        with self.assertRaises(Conflict):self.s.admit('device-a',self.c,'new','hash')
+        self.assertEqual(self.s.db.execute('SELECT count(*) FROM approvals').fetchone()[0],1)
+        self.assertEqual(self.s.db.execute('SELECT count(*) FROM dispatches').fetchone()[0],1)
+
     def test_capability_fail_closed(self):
         adapter=UnconfiguredRuntime()
         self.assertFalse(adapter.ready)

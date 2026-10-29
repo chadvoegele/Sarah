@@ -27,13 +27,13 @@ umask 077
 python -m bridge.prepare --state .state --origin https://companion.example.invalid:8787 --device example-device
 ```
 
-Replace that reserved origin with your own hostname. Generate/provision a TLS certificate and private key outside source control whose SAN matches that hostname. For a private CA, put the CA certificate (not private key) into the app's private data directory as `server-ca.pem`. Normal hostname and peer verification remain enabled. Transfer only the generated device settings securely into the app private data directory as `settings.json`, or enter origin/device token in the setup UI. Keep file mode 0600 and directory mode 0700. Never supply provider or HA credentials to the app.
+Replace that reserved origin with your own hostname. Generate/provision a TLS certificate and private key outside source control whose SAN matches that hostname. For a private CA, put the CA certificate (not private key) into the app's private data directory as `server-ca.pem`. Normal hostname and peer verification remain enabled. Transfer only the generated device settings securely into the app private data directory as `settings.json`, or enter origin/device token in the setup UI. Keep file mode 0600 and directory mode 0700. Never supply provider or agent credentials to the app.
 
 ```sh
 python -m bridge.server --db .state/state.db --cert .state/server-ca.pem --key .state/server.key --bind 127.0.0.1 --port 8787
 ```
 
-Those are explicit generic paths. The server requires local TLS and a configured model endpoint. Loopback is the default; expose to devices only through an authenticated, appropriately firewalled TLS path. See configuration/security before enabling integrations. No systemd units are included because inherited ones were deployment-specific; use your service manager with private environment files, explicit paths, restrictive umask, no unnecessary privilege and a single bridge process.
+Those are explicit generic paths. The server requires TLS (directly or through the trusted loopback proxy mode) and a configured model endpoint or ACP agent. Loopback is the default; expose to devices only through an authenticated, appropriately firewalled TLS path. See configuration/security and ACP documentation for agent tools and their trust boundary. No systemd units are included because inherited ones were deployment-specific; use your service manager with private environment files, explicit paths, restrictive umask, no unnecessary privilege and a single bridge process.
 
 ## Optional power helper
 

@@ -73,9 +73,9 @@ For a nondefault location, set `R1_KOKORO_ROOT` to the asset directory containin
 - HTTP upstream is allowed only on loopback; remote endpoints require HTTPS. No redirect following, environment proxies, credential rotation, retries or fallback providers.
 - `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE` configures the provider token; set only one. Leave both unset for a deliberately unauthenticated endpoint. Never commit tokens.
 - Streams have a total deadline and byte/output limits. Only final answer content is spoken, not `reasoning_content`. Qwen thinking is disabled via `chat_template_kwargs.enable_thinking=false` for voice latency.
-- ACP is opt-in. Its agent owns context and tools; Sarah does not replay prompts after uncertain results or attach to existing Matrix sessions. Bridge-owned integrations cannot be enabled with ACP.
-- Existing optional tools remain disabled by default. Do not enable HA/calendar/notes/TV integrations without reviewing their broad permissions. No live integration is required for conversation.
-- Pairing/authentication, request idempotency, history, cancellation and server-owned action receipts retain the upstream protocol. History/media persist server-side; local Android reset does not erase them.
+- ACP is opt-in. Its agent owns context and tools; Sarah does not replay prompts after uncertain results or attach to existing Matrix sessions. Bridge-owned integrations have been removed; configure agent tools and skills on the agent itself.
+- Direct Qwen provides voice conversation without built-in tools. The inherited Home Assistant, SiYuan, Maton Calendar and TV dispatchers and their enable flags have been removed. ACP agent-owned MCP integrations and skills remain independent.
+- Pairing/authentication, request idempotency, history, polling, audio and cancellation retain protocol 1. Health retains the legacy integration capability keys as `false`; the legacy confirmation route always denies authorization. Existing APK/package/signing are unchanged. History/media persist server-side; local Android reset does not erase them.
 
 ## Tests
 

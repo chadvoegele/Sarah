@@ -1,11 +1,8 @@
 """Synthetic fail-closed publication-input controls. No live credentials."""
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from bridge.tvtime import TVTimeDispatcher
 from test_public_defaults import scanner
 
 
@@ -92,11 +89,6 @@ def test_unreadable_directory_is_finding(tmp_path, monkeypatch):
     assert any(kind == 'unreadable-directory' for _, _, kind in scanner.scan(tmp_path))
 
 
-def test_constructor_rejects_relative_tv_script():
-    with pytest.raises(ValueError, match='tvtime_script_must_be_absolute'):
-        TVTimeDispatcher('relative.py')
-
-
 def test_reviewed_historical_png_only(tmp_path):
     root = Path(__file__).resolve().parents[1]
     data = (root / scanner.REVIEWED_ASSET).read_bytes()
@@ -148,16 +140,3 @@ def test_private_literal_review_remains_explicit(tmp_path):
     inventory(tmp_path, 'source.py')
     (tmp_path / 'source.py').write_text('synthetic owner calendar canary')
     assert any(kind == 'private-literal' for _, _, kind in scanner.scan(tmp_path, ('synthetic owner calendar canary',)))
-
-
-def test_tv_relative_path_rejected_and_configuration_captured(tmp_path, monkeypatch):
-    script = tmp_path / 'workflow.py'
-    script.write_text('pass\n')
-    monkeypatch.chdir(tmp_path)
-    with patch.dict(os.environ, {'R1_ENABLE_TVTIME': '1', 'R1_TVTIME_SCRIPT': 'workflow.py'}, clear=True):
-        assert TVTimeDispatcher.from_env() is None
-        os.environ['R1_TVTIME_SCRIPT'] = str(script)
-        dispatcher = TVTimeDispatcher.from_env()
-        assert dispatcher is not None
-        os.environ['R1_TVTIME_SCRIPT'] = str(tmp_path / 'other.py')
-        assert dispatcher.command == ('/usr/bin/python3', str(script))

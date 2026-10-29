@@ -236,7 +236,7 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
                                           device='one', conversation=self.conversation)
         self.assertEqual(self.requests, [])
 
-    async def test_backend_selection_and_integration_conflicts(self):
+    async def test_backend_selection_and_removed_integration_injection(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsInstance(create_runtime(self.store), VoiceRuntime)
         with patch.dict(os.environ, {'SARAH_BACKEND':'invalid'}, clear=True):
@@ -244,8 +244,33 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {'SARAH_BACKEND':'acp', 'SARAH_ACP_CWD':str(self.root),
                                      'SARAH_ACP_SOCKET':self.socket}, clear=True):
             self.assertIsInstance(create_runtime(self.store), ACPRuntime)
-        with self.assertRaisesRegex(ValueError, 'bridge-owned integrations'):
+        with self.assertRaises(TypeError):
             make_app(self.store, self.runtime, ha=object())
+
+    async def test_legacy_environment_cannot_enable_bridge_tools(self):
+        legacy = {'R1_ENABLE_HA':'1', 'R1_ENABLE_SIYUAN':'1',
+                  'R1_ENABLE_CALENDAR':'1', 'R1_ENABLE_TVTIME':'1',
+                  'R1_HA_ORIGIN':'https://ha.example.invalid', 'R1_HA_TOKEN':'synthetic',
+                  'SIYUAN_INTERNAL_URL':'https://notes.example.invalid', 'SIYUAN_API_TOKEN':'synthetic',
+                  'MATON_AI_API_KEY':'synthetic', 'R1_CALENDAR_ID':'example-calendar',
+                  'R1_TVTIME_SCRIPT':'/not/executed/workflow.py',
+                  'SARAH_ACP_CWD':str(self.root), 'SARAH_ACP_SOCKET':self.socket}
+        for backend in ('llm', 'acp'):
+            with patch.dict(os.environ, {**legacy,'SARAH_BACKEND':backend}, clear=True):
+                adapter = create_runtime(self.store)
+                client = TestClient(TestServer(make_app(self.store,adapter)))
+                await client.start_server()
+                try:
+                    response = await client.get('/v1/health', headers={'Authorization':'Bearer '+'a'*48})
+                    self.assertEqual(response.status,200)
+                    health = await response.json()
+                    self.assertTrue(health['ready'])
+                    self.assertEqual(health['backend'],backend)
+                    for key in ('tools','home_assistant','siyuan','calendar','tvtime'):
+                        self.assertIs(health[key],False)
+                finally:
+                    await client.close()
+        self.assertEqual(self.requests,[])
 
     async def test_stdio_transport_is_reaped_and_does_not_inherit_provider_token(self):
         script = self.root / 'agent.py'

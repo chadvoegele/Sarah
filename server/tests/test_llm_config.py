@@ -7,7 +7,7 @@ import pytest
 
 from bridge.llm_config import LLMConfig
 from bridge.runtime import VoiceRuntime
-from test_runtime import Stream, Transport, runtime, tool_events, text_events
+from test_runtime import Stream, Transport, runtime, tool_events
 
 
 @pytest.mark.parametrize('url', [
@@ -55,11 +55,11 @@ def test_blank_model_rejected():
         LLMConfig(model=' ')
 
 
-async def run_stream(events, *, dispatch=None):
+async def run_stream(events):
     adapter, _ = runtime()
     chunks = [('data: '+json.dumps(e)+'\n\n').encode() for e in events]
     with Transport([(200, Stream(chunks))]) as transport:
-        result = await adapter.reply('hello', dispatch=dispatch)
+        result = await adapter.reply('hello')
     return result, transport
 
 
@@ -72,7 +72,7 @@ class TestStreams:
             with pytest.raises(RuntimeError, match='llm_incomplete_response'):
                 asyncio.run(run_stream(events))
 
-    def test_fragmented_tool_call_and_chat_tool_result(self):
+    def test_fragmented_tool_call_denied_before_followup(self):
         import asyncio
         events = [
             {'choices':[{'index':0,'delta':{'tool_calls':[{'index':0,'id':'call-1',
@@ -80,23 +80,15 @@ class TestStreams:
             {'choices':[{'index':0,'delta':{'tool_calls':[{'index':0,
                 'function':{'arguments':'id":"light.test"}'}}]},'finish_reason':'tool_calls'}]},
         ]
-        chunks = [('data: '+json.dumps(e)+'\n\n').encode() for e in events]
-        called = []
-
-        async def dispatch(name, args):
-            called.append((name,args))
-            return {'state':'on'}
-
         async def check():
             adapter, _ = runtime()
-            answer = Stream([('data: '+json.dumps(text_events('It is on.')[0])+'\n\n').encode()])
-            with Transport([(200, Stream(chunks)), (200,answer)]) as transport:
-                assert await adapter.reply('state?', dispatch=dispatch) == 'It is on.'
-            payload = json.loads(transport.requests[1].content)
-            assert payload['messages'][-1] == {'role':'tool','tool_call_id':'call-1','content':'{"state": "on"}'}
-            assert payload['messages'][-2]['tool_calls'][0]['function']['name'] == 'ha_get_state'
+            stream = Stream([('data: '+json.dumps(e)+'\n\n').encode() for e in events])
+            with Transport([(200,stream)]) as transport:
+                with pytest.raises(RuntimeError, match='llm_tool_denied'):
+                    await adapter.reply('state?')
+            assert len(transport.requests) == 1
+            assert stream.closed
         asyncio.run(check())
-        assert called == [('ha_get_state', {'entity_id':'light.test'})]
 
     @pytest.mark.parametrize('name', ['unknown_shell_tool', 'ha_get_state'])
     def test_unknown_or_unrequested_tools_never_dispatch(self, name):

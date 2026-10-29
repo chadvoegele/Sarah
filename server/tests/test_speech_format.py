@@ -1,5 +1,6 @@
 """Speech-only Markdown cleanup; literal values and displayed answers survive."""
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,8 +35,8 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.speech_text(r'Literal \* and `a*b*c` and `#42`.'), 'Literal * and a*b*c and #42.')
 
     async def test_server_display_and_history_keep_original_provider_answer(self):
-        from test_siyuan import Notes, DOC
-        case = Notes('test_natural_notebooks_search_read_then_ha')
+        from test_open_conversation import Conversation
+        case = Conversation('test_voice_history_audio_and_conversation_isolation')
         await case.asyncSetUp()
         seen = []
         async def process(*args, input=None, **kwargs):
@@ -45,17 +46,15 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
         async def speak(text, path):
             await runtime.VoiceRuntime.speak(case.adapter, text, path)
         try:
-            case.prose = '## Oven\n- **GE Café:** `CTC912P2NS1`, **$100.50**.'
-            case.calls = [('sy_read', {'document_id': DOC})]
+            prose = '## Oven\n- **GE Café:** `CTC912P2NS1`, **$100.50**.'
             case.adapter.speak = speak
-            with patch.object(runtime, '_tts_process', process):
-                row = await case.submit()
-                self.assertEqual(row['detail'], case.prose)
+            with patch.object(runtime, '_tts_process', process), case.model(prose, 'Followup') as transport:
+                row = await case.finished(await case.submit())
+                self.assertEqual(row['detail'], prose)
                 self.assertEqual(seen, ['Oven\nGE Café: CTC912P2NS1, one hundred dollars and fifty cents.'])
-                case.calls = []
-                await case.submit('followup')
-                self.assertIn({'role': 'assistant', 'content': case.prose}, case.wire[-1]['messages'][1:])
-            self.assertEqual(case.body, 'Original body')
+                await case.finished(await case.submit('followup'))
+                self.assertIn({'role':'assistant', 'content':prose},
+                              json.loads(transport.requests[-1].content)['messages'][1:])
         finally:
             await case.asyncTearDown()
 
