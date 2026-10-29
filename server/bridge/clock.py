@@ -1,4 +1,4 @@
-"""R1 clock presentation only; no general number rewriting."""
+"""Spoken clock presentation only; no general number rewriting."""
 import re
 import os
 from datetime import datetime

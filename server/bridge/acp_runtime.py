@@ -9,7 +9,6 @@ from .runtime import SpeechRuntime
 class ACPRuntime(SpeechRuntime):
     ready = True
     backend = 'acp'
-    cancel_on_request = True
     reason = ('ACP agent backend configured; agent controls its own tools. '
               'Client permission requests are denied; no bridge-owned integrations.')
 
@@ -83,10 +82,7 @@ class ACPRuntime(SpeechRuntime):
 
 
 def create_runtime(store):
-    backend = os.getenv('SARAH_BACKEND', 'llm')
-    if backend == 'acp':
-        return ACPRuntime(store)
-    if backend == 'llm':
-        from .runtime import VoiceRuntime
-        return VoiceRuntime()
-    raise ValueError('SARAH_BACKEND must be llm or acp')
+    # Retain the deployed selector as a compatibility assertion, not a fallback.
+    if os.getenv('SARAH_BACKEND', 'acp') != 'acp':
+        raise ValueError('SARAH_BACKEND must be acp')
+    return ACPRuntime(store)

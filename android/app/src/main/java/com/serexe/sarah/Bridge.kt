@@ -110,10 +110,6 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
  override fun lookup(request:String):JSONObject { require(Identity.valid(request));return json("/v1/requests/$request") }
  override fun poll(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn") }
  override fun cancel(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn/cancel","POST",empty()) }
- override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {
-  require(listOf(turn,conversation,nonce,hash).all(Identity::valid))
-  return json("/v1/turns/$turn/confirmation","POST",JSONObject().put("conversation",conversation).put("nonce",nonce).put("action_hash",hash).put("accept",accept).toString().toRequestBody("application/json".toMediaType()))
- }
  override fun audio(turn:String):ByteArray {
   require(Identity.valid(turn))
   val body=call("/v1/turns/$turn/audio").second

@@ -20,8 +20,8 @@ class SarahViewModelTest {
   override fun reset() {value=JSONObject()}
  }
  private class Wire:BridgePort {
-  var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0
-  var creates=0;var cancels=0;var confirms=0
+  var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0;var polls=0
+  var creates=0;var cancels=0
   var onSubmit:(()->Unit)?=null
   var onAudio:(()->Unit)?=null
   var row=JSONObject().put("id","t1").put("conversation","c1").put("state","done").put("detail","reply").put("audio",false)
@@ -29,9 +29,8 @@ class SarahViewModelTest {
   override fun create():String {creates++;return "c1"}
   override fun submit(conversation:String,request:String,wav:ByteArray):String {posts++;onSubmit?.invoke();return "t1"}
   override fun lookup(request:String):JSONObject {lookups++;return row}
-  override fun poll(turn:String)=row
+  override fun poll(turn:String):JSONObject {polls++;return row}
   override fun cancel(turn:String):JSONObject {cancels++;return row}
-  override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {confirms++;return row}
   override fun audio(turn:String):ByteArray {onAudio?.invoke();return byteArrayOf(1)}
  }
  private class Mic:AudioCapture {
@@ -51,6 +50,24 @@ class SarahViewModelTest {
   val memory=Memory(initial,guardedStore,loadFailure);val wire=Wire();val mic=Mic();lateinit var sound:Sound;var starts=0;var rearms=0
   val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
+ }
+ @Test fun removedServerStatesStayUncertainWithoutApprovalOrPollingLoop() {
+  for(stage in listOf("confirming","acting","unknown")) {
+   val f=fixture(persisted("uncertain").put("request","request-1").put("turn","t1"))
+   f.wire.row.put("state",stage).put("confirmation",JSONObject().put("conversation","c1").put("nonce","old"))
+   f.vm.onForeground();f.vm.checkExisting()
+   assertEquals("uncertain",f.vm.ui.value.phase)
+   assertEquals(1,f.wire.lookups);assertEquals(0,f.wire.polls)
+   assertEquals(0,f.wire.posts);assertEquals(0,f.wire.cancels)
+   assertFalse(f.vm.ui.value.canCapture)
+   f.vm.onBackground()
+  }
+ }
+ @Test fun historicalConfirmationStateRestoresAsUncertain() {
+  val f=fixture(persisted("confirming").put("request","request-1").put("turn","t1"))
+  assertEquals("uncertain",f.vm.ui.value.phase)
+  assertEquals("uncertain",f.memory.value.getString("phase"))
+  assertEquals(0,f.wire.posts);assertEquals(0,f.wire.lookups)
  }
  @Test fun localSnapshotUsesRealLeaseReleaseAndHealthStateWithoutSensitiveFields() {
   val secret="dangerous-private-text"
@@ -363,13 +380,13 @@ class SarahViewModelTest {
   assertTrue(OffscreenOwnership.acquire(owner))
   try {
    val writes=f.memory.writes
-   f.vm.newConversation();f.vm.checkExisting();f.vm.cancelTurn();f.vm.confirm(true)
+   f.vm.newConversation();f.vm.checkExisting();f.vm.cancelTurn()
    f.vm.clearLocal();f.vm.resetPairing();f.vm.stopAudio();f.vm.reconnect()
    assertEquals(writes,f.memory.writes)
    assertEquals("admitted-request",f.memory.value.getString("request"))
    assertEquals("c1",f.memory.value.getString("conversation"))
    assertEquals(0,f.wire.creates);assertEquals(0,f.wire.lookups)
-   assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.confirms)
+   assertEquals(0,f.wire.cancels)
   } finally {OffscreenOwnership.release(owner)}
   f.vm.syncAfterService();f.vm.checkExisting()
   assertEquals(1,f.wire.lookups)

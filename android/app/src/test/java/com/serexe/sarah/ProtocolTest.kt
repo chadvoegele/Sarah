@@ -28,6 +28,11 @@ class ProtocolTest {
   assertEquals(3,Bounded.read(ByteArrayInputStream(ByteArray(3)),3).size)
   assertThrows(IllegalArgumentException::class.java) {Bounded.read(ByteArrayInputStream(ByteArray(4)),3)}
  }
+ @Test fun removedIntegrationStatesAreNotAccepted() {
+  val s=TurnState();assertTrue(s.begin("c1","request-1"))
+  for(stage in listOf("confirming","acting")) assertFalse(s.accept("c1","request-1",stage))
+  assertEquals("uploading",s.phase)
+ }
  @Test fun ownershipAndNoResend() {
   val s=TurnState()
   assertTrue(s.begin("c1","r1"))

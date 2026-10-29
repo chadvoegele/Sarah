@@ -1,4 +1,4 @@
-"""R1-only local Kokoro worker. Run with isolated audition venv Python -I.
+"""Local Kokoro worker. Run with isolated speech venv Python -I.
 
 No network/download/provider fallback. One owned process per reply allows the
 bridge's existing deadline/cancellation path to terminate and reap synthesis.

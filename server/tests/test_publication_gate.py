@@ -1,6 +1,4 @@
 """Synthetic fail-closed publication-input controls. No live credentials."""
-from pathlib import Path
-
 import pytest
 
 from test_public_defaults import scanner
@@ -89,51 +87,13 @@ def test_unreadable_directory_is_finding(tmp_path, monkeypatch):
     assert any(kind == 'unreadable-directory' for _, _, kind in scanner.scan(tmp_path))
 
 
-def test_reviewed_historical_png_only(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    data = (root / scanner.REVIEWED_ASSET).read_bytes()
-    target = tmp_path / scanner.REVIEWED_ASSET
-    target.parent.mkdir()
-    target.write_bytes(data)
-    inventory(tmp_path, scanner.REVIEWED_ASSET)
-    assert scanner.reviewed_png(data)
-    assert scanner.scan(tmp_path) == []
-    target.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
-    assert scanner.scan(tmp_path)
-
-
-@pytest.mark.parametrize('name', ['assets/another.png', 'renamed.png', 'assets/nested/sarah-r1-native-redacted.png'])
-def test_reviewed_image_new_path_or_additional_image_rejected(tmp_path, name):
-    root = Path(__file__).resolve().parents[1]
+@pytest.mark.parametrize('name', ['assets/screenshot.png', 'renamed.png', 'assets/nested/image.png'])
+def test_all_images_rejected(tmp_path, name):
     target = tmp_path / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes((root / scanner.REVIEWED_ASSET).read_bytes())
+    target.write_bytes(b'\x89PNG\r\n\x1a\nsynthetic')
     inventory(tmp_path, name)
     assert any(kind == 'private-or-generated-file' for _, _, kind in scanner.scan(tmp_path))
-
-
-@pytest.mark.parametrize('kind', [b'tEXt', b'eXIf', b'iTXt'])
-def test_reviewed_png_metadata_rejected_even_if_hash_reapproved(tmp_path, monkeypatch, kind):
-    import hashlib
-    import struct
-    import zlib
-    data = (Path(__file__).resolve().parents[1] / scanner.REVIEWED_ASSET).read_bytes()
-    payload = b'synthetic metadata'
-    chunk = struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload))
-    changed = data[:33] + chunk + data[33:]
-    assert not scanner.reviewed_png(changed)
-    monkeypatch.setattr(scanner, 'REVIEWED_SHA256', hashlib.sha256(changed).hexdigest())
-    target = tmp_path / scanner.REVIEWED_ASSET
-    target.parent.mkdir()
-    target.write_bytes(changed)
-    inventory(tmp_path, scanner.REVIEWED_ASSET)
-    assert scanner.scan(tmp_path)
-
-
-@pytest.mark.parametrize('suffix', [b'private trailing bytes', b'\x00'])
-def test_reviewed_png_trailing_data_rejected(suffix):
-    data = (Path(__file__).resolve().parents[1] / scanner.REVIEWED_ASSET).read_bytes()
-    assert not scanner.reviewed_png(data + suffix)
 
 
 def test_private_literal_review_remains_explicit(tmp_path):

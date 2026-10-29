@@ -1,40 +1,31 @@
-# Build and setup
+# Server setup
 
-## Native client
+Use Python 3.12, a dedicated unprivileged account, a private state directory and one bridge process. Install `requirements.txt`; add `requirements-dev.txt` for tests. Configure an ACP transport as described in [ACP.md](ACP.md). The agent owns its model, credentials, tools and skills.
 
-Requires Qt 5.15 development packages for Core, Gui, Qml, Quick, Multimedia and Network, a C++17 compiler, CMake 3.16+, and Lomiri.Components 1.3 at runtime. Ubuntu Touch ARM64 framework is `ubuntu-touch-24.04-1.x` as specified by `clickable.yaml` and `manifest.json`.
+## Local speech
+
+Obtain the Whisper base model explicitly into `R1_WHISPER_MODELS` (default `.build/whisper-models` relative to `server/`). The runtime always uses `local_files_only=True`:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 2
-cmake --install build --prefix "$PWD/package"
+.venv/bin/python -c 'from faster_whisper.utils import download_model; download_model("base", cache_dir=".build/whisper-models")'
 ```
 
-Use an appropriate Ubuntu Touch ARM64 SDK/Clickable 8.10+ environment for a device package; a normal host build is not a device-compatible package. `clickable build` is the conventional SDK build entry point. No package upload or device installation is automatic. Metadata still uses the generic local package namespace `hermes-touch-voice.local`; choose a publisher-controlled namespace and maintainer contact before publishing. Keep C++ application identity, QML applicationName, package metadata, confinement and private-data paths consistent when changing it. Manifest version 0.2.6 is retained source metadata, not proof of a public release. CMake's 0.1.0 project version is likewise historical.
+For optional synthesis, create an isolated Python environment at `R1_KOKORO_ROOT/venv` (default `.build/kokoro-audition/venv`), install `requirements-tts.txt`, and obtain `kokoro-v1.0.onnx` and `voices-v1.0.bin` in that root. [Dockerfile](../Dockerfile) records pinned model/voice download hashes. The worker invokes Python with `-I`; FFmpeg with libmp3lame must be at `/usr/bin/ffmpeg`. Review separate model/voice/dependency licenses before redistribution. Runtime never downloads assets or falls back to cloud speech. Missing Whisper fails the voice turn; unavailable TTS preserves the agent's text.
 
-Optional native probes are retained as C++ source. They require Qt test/runtime libraries, local fixtures and isolated HOME. Historical shell harnesses depended on a private SDK/device layout and are deliberately omitted rather than presented as portable scripts. Native probes are not automatically exercised by pytest.
+The existing `faster-whisper==1.2.1` and `av==16.1.0` compatibility pins are retained. The separate TTS worker pins are unchanged. Direct HTTP model transport pins were removed from declared requirements; speech packages may still depend transitively on HTTP libraries.
 
-## Bridge
+## Private pairing and startup
 
-Use a dedicated unprivileged account and private directory; do not run a public listener as root. Python dependencies are in `requirements.txt`. `requirements-dev.txt` adds pytest. Configure `SARAH_LLM_BASE_URL`, `SARAH_LLM_MODEL`, and `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE` for your local OpenAI-compatible model. No Hermes source or Codex account is required. See the repository-root README for the Android/Qwen setup.
-
-Obtain Whisper model assets explicitly into `R1_WHISPER_MODELS` (default `.build/whisper-models`); the runtime uses `local_files_only=True`. Obtain independently licensed Kokoro ONNX/voice assets, install `kokoro-onnx`, `onnxruntime`, `numpy`, `soundfile` in `R1_KOKORO_ROOT/venv`, and put `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `R1_KOKORO_ROOT` (default `.build/kokoro-audition`). This optional TTS environment is invoked using its Python with `-I`; OS `ffmpeg` with libmp3lame is needed. Model/dependency versions and redistribution rights require separate validation; no assets are bundled.
-
-Provision locally (creates credentials: never commit or share output files):
+Supply a private 40–256 character printable non-whitespace ASCII key file. Provision it without putting its contents in process arguments or logs:
 
 ```sh
 umask 077
-python -m bridge.prepare --state .state --origin https://companion.example.invalid:8787 --device example-device
+python -m bridge.provision_device --db .state/state.db --device android --token-file /private/sarah-api-key
+python -m bridge.server --db .state/state.db --cert /private/server.pem --key /private/server.key --bind 127.0.0.1 --port 8787
 ```
 
-Replace that reserved origin with your own hostname. Generate/provision a TLS certificate and private key outside source control whose SAN matches that hostname. For a private CA, put the CA certificate (not private key) into the app's private data directory as `server-ca.pem`. Normal hostname and peer verification remain enabled. Transfer only the generated device settings securely into the app private data directory as `settings.json`, or enter origin/device token in the setup UI. Keep file mode 0600 and directory mode 0700. Never supply provider or agent credentials to the app.
+Certificates must match the Android-facing hostname. Pair Android with the HTTPS origin and device key; optionally import the private CA certificate, never its key. Keep tokens, SQLite, transcripts and media private. The removed native-settings generator is unnecessary; existing device DB records remain valid. Repeating file provisioning checks the same key and rejects rotation/revocation mismatches.
 
-```sh
-python -m bridge.server --db .state/state.db --cert .state/server-ca.pem --key .state/server.key --bind 127.0.0.1 --port 8787
-```
+For a TLS proxy/container, use the existing [proxy setup](PROXY.md), image/entrypoint and API-key file contract. Direct TLS remains default; plaintext HTTP requires explicit literal loopback binding. Configure phone/VPN routing and firewall deliberately. A loopback check does not prove phone connectivity.
 
-Those are explicit generic paths. The server requires TLS (directly or through the trusted loopback proxy mode) and a configured model endpoint or ACP agent. Loopback is the default; expose to devices only through an authenticated, appropriately firewalled TLS path. See configuration/security and ACP documentation for agent tools and their trust boundary. No systemd units are included because inherited ones were deployment-specific; use your service manager with private environment files, explicit paths, restrictive umask, no unnecessary privilege and a single bridge process.
-
-## Optional power helper
-
-See `power/README.md`. No helper service is installed automatically.
+See [Android prerequisites](../../android/README.md) for app builds. This repository has no native Ubuntu Touch build or packaging target.

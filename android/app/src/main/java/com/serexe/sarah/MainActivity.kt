@@ -261,12 +261,6 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
    Text("No automatic resend. Server actions may already have happened.")
    Button(onClick=vm::checkExisting,modifier=Modifier.fillMaxWidth().heightIn(min=64.dp)) {Text("Check existing request status")}
    OutlinedButton(onClick=vm::reconnect,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Check connection")}
-  } else if(ui.phase=="confirming" && ui.confirmation!=null) {
-   Text("Server confirmation: ${ui.confirmation.optString("label").take(200)}")
-   Text("Accepting is not proof action succeeded.")
-   Button(onClick={vm.confirm(true)},modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {Text("Confirm once")}
-   OutlinedButton(onClick={vm.confirm(false)},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Deny")}
-   TextButton(onClick=vm::cancelTurn) {Text("Cancel server turn (no rollback)")}
   } else if(ui.phase=="polling") {
    Text("Waiting for actual server status; no progress estimate")
    OutlinedButton(onClick=vm::cancelTurn,modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {Text("Cancel server turn (no rollback)")}

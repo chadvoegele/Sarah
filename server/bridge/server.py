@@ -1,4 +1,4 @@
-"""Private TLS bridge. Configurable local LLM + local STT/TTS."""
+"""Private HTTP/TLS speech bridge to a durably bound ACP agent."""
 import argparse
 import asyncio
 import hashlib
@@ -38,11 +38,9 @@ def make_app(store, adapter=None):
         if not isinstance(value,dict) or set(value)!=set(keys):raise Denied('unexpected_fields')
         return value
     async def health(request):
-        # Retain protocol-1 capability keys for existing Android/native clients.
         return web.json_response({'connected':True,'ready':bool(adapter.ready),
             'reason':getattr(adapter,'reason',''),'protocol':1,
-            'backend':getattr(adapter,'backend','llm'),'tools':False,
-            'home_assistant':False,'siyuan':False,'calendar':False,'tvtime':False})
+            'backend':'acp'})
     async def conversation(request):
         await body(request,[])
         return web.json_response({'conversation':store.conversation(request['device'])},status=201)
@@ -57,10 +55,7 @@ def make_app(store, adapter=None):
             rows=store.db.execute("SELECT transcript,detail FROM turns WHERE device=? AND conversation=? AND state='done' ORDER BY rowid DESC LIMIT 4",(device,conversation)).fetchall()
             history=[]
             for row in reversed(rows):history.extend([{'role':'user','content':row['transcript']},{'role':'assistant','content':row['detail']}])
-            if hasattr(adapter, 'reply_turn'):
-                text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation)
-            else:
-                text=await adapter.reply(transcript,history)
+            text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation)
             if not active(device,turn):return
             store.finish(device,turn,'speaking','Preparing spoken reply',transcript)
             try:await asyncio.wait_for(adapter.speak(text,media/(turn+'.mp3')),timeout=45)
@@ -92,11 +87,6 @@ def make_app(store, adapter=None):
         turn=request.match_info['turn'];result=store.get(request['device'],turn)
         result['audio']=result['state']=='done' and (media/(turn+'.mp3')).is_file()
         return web.json_response(result)
-    async def confirmation(request):
-        # Protocol-1 compatibility only. No approval can authorize bridge tools.
-        await body(request,['conversation','nonce','action_hash','accept'])
-        store.get(request['device'],request.match_info['turn'])
-        raise Denied('confirmation_unavailable')
     async def lookup(request):
         # Read-only, authenticated device ownership; never admits or dispatches.
         result=store.by_request(request['device'],request.match_info['request'])
@@ -112,7 +102,7 @@ def make_app(store, adapter=None):
         # Discard output; cancellation cannot undo an ACP agent action.
         turn=request.match_info['turn'];result=store.cancel(request['device'],turn)
         task=tasks.get(turn)
-        if task is not None and getattr(adapter,'cancel_on_request',False): task.cancel()
+        if task is not None: task.cancel()
         return web.json_response(result)
     async def cleanup(app):
         pending=list(tasks.values())
@@ -123,7 +113,6 @@ def make_app(store, adapter=None):
     app.router.add_get('/v1/requests/{request}',lookup)
     app.router.add_post('/v1/turns',submit);app.router.add_get('/v1/turns/{turn}',poll)
     app.router.add_get('/v1/turns/{turn}/audio',audio);app.router.add_post('/v1/turns/{turn}/cancel',cancel)
-    app.router.add_post('/v1/turns/{turn}/confirmation',confirmation)
     return app
 
 def parse_args(argv=None):

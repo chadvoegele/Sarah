@@ -2,7 +2,7 @@
 
 Chad's Agent — implementation notes.
 
-Sarah can act as an **Agent Client Protocol v1 client**, while retaining local Whisper/Kokoro and the existing Android HTTPS API. Direct OpenAI-compatible inference remains the default.
+Sarah can act as an **Agent Client Protocol v1 client**, while retaining local Whisper/Kokoro and the existing Android HTTPS API. ACP is the only/default production backend.
 
 ```text
 Android → HTTPS Sarah bridge → Whisper → ACP agent → assistant text
@@ -29,11 +29,11 @@ unset SARAH_ACP_SOCKET
 export SARAH_ACP_COMMAND='["pi-acp"]'
 ```
 
-Set **exactly one** of `SARAH_ACP_SOCKET` or `SARAH_ACP_COMMAND`. The command is a JSON argv array executed directly, never a shell string and never derived from speech/model output. A stdio child inherits the bridge environment except `SARAH_*` variables, so the Sarah LLM token is not passed to it. Configure agent credentials privately using the agent's own mechanisms. Child stderr is discarded, not exposed to devices or bridge logs. The bridge owns and reaps spawned agent process groups; a socket connection never terminates the shared agent service.
+Set **exactly one** of `SARAH_ACP_SOCKET` or `SARAH_ACP_COMMAND`. The command is a JSON argv array executed directly, never a shell string and never derived from speech/model output. A stdio child inherits the bridge environment except `SARAH_*` variables, so bridge configuration stays out of it. Configure agent credentials privately using the agent's own mechanisms. Child stderr is discarded, not exposed to devices or bridge logs. The bridge owns and reaps spawned agent process groups; a socket connection never terminates the shared agent service.
 
 `SARAH_ACP_CWD` must be absolute. For sockets it is interpreted by the agent, not checked against the bridge filesystem. A stdio command also uses it as its local process cwd. The deadline (1–600 seconds, default 120) includes connect, initialize, session creation/loading and prompt completion. Backend/environment changes require a bridge restart.
 
-To return to Qwen, set `SARAH_BACKEND=llm`; existing `SARAH_LLM_*` configuration is unchanged. Start a new Sarah conversation when switching backends; prior direct-model history is not replayed into an agent.
+`SARAH_BACKEND=acp` remains compatible and may be omitted. Every other backend value fails startup. The direct-model runtime/settings have been removed. Prior direct-model history requires a deliberately created new conversation; it is never replayed into an agent. No database migration or device-key rotation is required.
 
 ## Sessions and recovery
 
@@ -42,7 +42,7 @@ To return to Qwen, set `SARAH_BACKEND=llm`; existing `SARAH_LLM_*` configuration
 - Persist its session ID, backend-configuration fingerprint and state in the private bridge SQLite database, before sending the first prompt. Session IDs are unique per backend binding.
 - Close the connection after each turn. Reconnect and `session/load` for subsequent turns or after bridge restart. An agent must advertise `loadSession` for resumed conversations.
 - Load-time replay/startup notifications are ignored. Send only the current transcript as a text prompt; the ACP agent owns its context. Never resend Sarah history.
-- A failed load never falls back to `session/new`. An inflight, interrupted, timed-out, disconnected or cancelled prompt leaves its binding uncertain and blocks further prompts in that conversation. Start a new conversation deliberately; no automatic replay/retry or transfer to Qwen.
+- A failed load never falls back to `session/new`. An inflight, interrupted, timed-out, disconnected or cancelled prompt leaves its binding uncertain and blocks further prompts in that conversation. Start a new conversation deliberately; no automatic replay/retry or transfer to another backend.
 - HTTP cancellation sends `session/cancel` best-effort, closes the connection and cleans up owned processes. Cancellation is **not rollback** and does not prove agent tools stopped or undo their effects. Agent-side session/history deletion is not implemented.
 
 Only `agent_message_chunk` text received during the active prompt is retained/spoken. Pi's advertised startup prelude and typed extension/UI notifications are filtered even when they arrive after a prompt begins. Thoughts, tools, usage, startup text and replayed history are not. A complete nonempty answer requires `stopReason=end_turn`; partial/refused/cancelled/length-limited turns fail closed. Frames, total bytes, frame count, answer length and total runtime are bounded. Upstream errors/payloads are not included in device error messages.
@@ -51,9 +51,9 @@ Only `agent_message_chunk` text received during the active prompt is retained/sp
 
 **Selecting an ACP backend delegates to an agent with its own configured privileges.** Denying ACP client permission requests is not an agent sandbox. In particular, Pi/Dex may execute its own tools without asking the client; its credentials and host mounts can provide broad access.
 
-Sarah always returns a cancelled permission outcome and rejects delegated filesystem/terminal/client RPC methods. There is no automatic approval policy. Sarah's inherited HA/notes/calendar/TV dispatchers have been removed from both backends. Configure tools and restrictions on the ACP agent instead. The health response's `tools` field describes Sarah-owned integrations only; it does not certify that an ACP agent has no tools. `backend=acp` identifies the selected trust boundary.
+Sarah always returns a cancelled permission outcome and rejects delegated filesystem/terminal/client RPC methods. There is no automatic approval policy. Sarah has no bridge-owned integrations or confirmation route/UI. Configure tools and restrictions on the ACP agent. Health reports `backend=acp`; obsolete integration capability flags are removed. This is no guarantee that an agent has no tools.
 
-ACP-authored action claims are ordinary agent prose, not Sarah dispatcher receipts. The direct-Qwen backend offers conversation only and rejects tool calls. Do not treat ACP replies as verified physical action outcomes.
+ACP-authored action claims are ordinary agent prose, not Sarah dispatcher receipts. Do not treat ACP replies as verified physical action outcomes.
 
 ## Dex integration
 

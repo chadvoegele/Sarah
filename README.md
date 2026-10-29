@@ -1,87 +1,58 @@
 # Sarah
 
-Android voice assistant and Python HTTPS bridge, with a configurable OpenAI-compatible local model (default) or an optional [ACP agent backend](server/docs/ACP.md). No Hermes installation, credential pool, or automatic provider fallback. An ACP agent manages its own model/credentials/tools.
+Android voice assistant and Python HTTP/TLS speech bridge to an ACP agent. Local Whisper transcribes voice; the agent owns conversation context, model configuration, skills and tools; local Kokoro/FFmpeg supplies optional MP3 replies.
 
 ```text
-Android → HTTPS bridge → local Whisper → Qwen chat/completions
-        ← text + MP3   ← local Kokoro ← model reply
+Android → HTTPS Sarah bridge → local Whisper → ACP Unix socket/stdio agent
+        ← text + MP3         ← local Kokoro ← assistant text
 ```
 
-## Layout / provenance
+- `android/`: Kotlin/Compose app, imported from [serexe/sarah-android](https://github.com/serexe/sarah-android) at `e29456bc59fe26ecd482c434141f41433d2e8a90`.
+- `server/`: speech bridge, derived from [serexe/sarah-r1](https://github.com/serexe/sarah-r1) at `9794c41b201cc97001e575cb28a72b54489148bb`.
+- Original MIT copyrights/licenses and third-party notices remain in each subtree. Historical Android checksum/release records apply to their named upstream artifacts.
 
-- `android/`: https://github.com/serexe/sarah-android at `e29456bc59fe26ecd482c434141f41433d2e8a90`.
-- `server/`: https://github.com/serexe/sarah-r1 at `9794c41b201cc97001e575cb28a72b54489148bb`, including its legacy Ubuntu Touch client/tests for reference.
-- Upstream MIT licenses and third-party notices are retained in each subtree. Upstream publication/checksum reports describe upstream artifacts, not this fork. Android is unchanged; its existing API matches this bridge.
-- The original import is committed separately from local backend changes. Upstream README/publication records are historical; this README and `server/docs/CONFIGURATION.md` describe the fork's setup.
+The supported product is Android + speech server + ACP client. The inherited Qt/QML/Ubuntu Touch client, power helper, native packaging, direct OpenAI-compatible model client and bridge-owned integration confirmation flow have been removed. This source change does not deploy a service or publish an APK.
 
-## ACP / Dex backend
+## Setup
 
-Set `SARAH_BACKEND=acp`, `SARAH_ACP_CWD` to the agent's absolute working directory, and `SARAH_ACP_SOCKET` to its Unix socket. Alternatively set `SARAH_ACP_COMMAND` to a JSON argv array for a stdio agent. [ACP setup and security](server/docs/ACP.md) covers dedicated persistent conversation sessions, cancellation, denied client permission requests, and future Dex socket-volume access. This does not deploy or change Dex; an ACP agent's own tools retain its configured privileges.
-
-## Reverse proxy / Docker
-
-The server includes a container image and an explicit loopback-only HTTP mode for use behind a trusted HTTPS proxy. It reuses the existing device Bearer token as the API key; no Basic-auth layer or APK change is required. See [proxy and provisioning setup](server/docs/PROXY.md). Keep direct TLS as the default outside that topology.
-
-## Server setup
-
-Requires Python 3.12, FFmpeg for MP3, local speech assets, and an OpenAI-compatible chat-completions server (such as llama.cpp).
+Use Python 3.12 and a dedicated unprivileged account. From `server/`:
 
 ```sh
-cd server
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
+export SARAH_ACP_CWD=/absolute/agent/working/directory
+export SARAH_ACP_SOCKET=/run/pi-acp/acp.sock
+# ACP is the only backend; SARAH_BACKEND=acp remains accepted.
 
-# Copy generic configuration; edit privately, then explicitly export it.
-cp config/bridge.env.example .env
-# Supply endpoint/model and a provider token or private token-file path:
-export SARAH_LLM_BASE_URL=http://127.0.0.1:8012/v1
-export SARAH_LLM_MODEL=ggml-org/Qwen3.8-27B-GGUF:Q4_K_M
-export SARAH_LLM_API_KEY_FILE=/absolute/private/path/llm-token
+# Supply an existing private 40–256 character device key file. Never commit it.
+umask 077
+.venv/bin/python -m bridge.provision_device --db .state/state.db \
+  --device android --token-file /absolute/private/path/sarah-api-key
 
-# One-time local pairing state; token is saved privately, not printed.
-.venv/bin/python -m bridge.prepare --state .state --origin https://localhost:8787 --device android
-# Local test CA/server certificate only; use a trusted deployment cert for real use.
-openssl req -x509 -newkey rsa:2048 -nodes -days 7 \
-  -keyout .state/server.key -out .state/server.pem \
-  -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
-  -addext 'basicConstraints=critical,CA:TRUE'
-chmod 600 .state/server.key
-
-# Provision speech assets explicitly (runtime never downloads them).
-.venv/bin/python -c 'from faster_whisper.utils import download_model; download_model("base", cache_dir=".build/whisper-models")'
-
+# Supply private TLS material whose SAN matches the bridge hostname.
 .venv/bin/python -m bridge.server --db .state/state.db \
-  --cert .state/server.pem --key .state/server.key --bind 127.0.0.1 --port 8787
+  --cert /absolute/private/path/server.pem --key /absolute/private/path/server.key \
+  --bind 127.0.0.1 --port 8787
 ```
 
-The server listens only on loopback by default. To pair a phone, deliberately configure a reachable bind address, firewall and TLS hostname/certificate; `localhost` on the phone is not this server. Android accepts an explicitly imported private CA. Enter the bridge origin and device token from `.state/native-settings.json`, **not** the Qwen token. Keep that file private.
+Provision local speech assets explicitly; runtime never downloads or uses cloud speech. See [server setup](server/docs/SETUP.md) and [configuration](server/docs/CONFIGURATION.md). A JSON argv `SARAH_ACP_COMMAND` can replace the socket transport. Agent credentials and permissions belong to the agent.
 
-Kokoro is optional. Example setup from `server/` (review the upstream model/voice licenses before use):
+The default listener is loopback. For phone access, configure deliberate routing, firewall and hostname-valid TLS. [Docker and reverse proxy setup](server/docs/PROXY.md) retains the existing image/entrypoint, API-key file provisioning and explicit loopback HTTP behind nginx. Android uses an HTTPS origin and the same revocable device Bearer token, with an optional explicitly imported private CA. [Android build prerequisites](android/README.md) include an external pinned AAR and private review signing configuration.
+
+## Compatibility and recovery
+
+Protocol 1 basic voice remains: authenticated health, conversation creation, WAV submit, read-only request lookup, polling, audio and cancellation. Health retains `connected`, `ready`, `reason`, `protocol` and `backend=acp`. Obsolete integration capability flags and `/confirmation` are removed; updated Android has no integration approval UI. Existing protocol-1 basic voice clients do not use those fields/routes.
+
+ACP is now the default and only backend. `SARAH_BACKEND=llm` or any unsupported selection fails startup. Remove obsolete direct-model settings from private configuration and configure an ACP transport; prior direct-model conversations require an explicitly created new conversation. Existing ACP session bindings and device keys remain valid. There is no destructive database migration or automatic key rotation; old integration tables remain inert.
+
+Session identity is persisted before prompting, then reloaded for followups. Uncertain/interrupted outcomes never cause replay or a replacement session. Backend identity changes fail closed. Cancellation cannot undo agent actions. ACP agents retain their own privileges; Sarah denies client permission/delegated filesystem/terminal requests, which is not an agent sandbox. See [ACP trust and recovery](server/docs/ACP.md) and [security](server/SECURITY.md).
+
+## Validation
+
+From `server/` with test dependencies installed:
 
 ```sh
-uv venv --python 3.12 .build/kokoro-audition/venv
-uv pip install --python .build/kokoro-audition/venv/bin/python -r requirements-tts.txt
-curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -o .build/kokoro-audition/kokoro-v1.0.onnx
-curl -fL https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -o .build/kokoro-audition/voices-v1.0.bin
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-For a nondefault location, set `R1_KOKORO_ROOT` to the asset directory containing `venv/bin/python`. Missing TTS produces text-only replies. Missing Whisper assets fail voice turns. Speech models are not bundled.
-
-## Behavior and security
-
-- `SARAH_LLM_BASE_URL` includes the API prefix, normally `/v1`; the bridge appends `/chat/completions`.
-- HTTP upstream is allowed only on loopback; remote endpoints require HTTPS. No redirect following, environment proxies, credential rotation, retries or fallback providers.
-- `SARAH_LLM_API_KEY` or `SARAH_LLM_API_KEY_FILE` configures the provider token; set only one. Leave both unset for a deliberately unauthenticated endpoint. Never commit tokens.
-- Streams have a total deadline and byte/output limits. Only final answer content is spoken, not `reasoning_content`. Qwen thinking is disabled via `chat_template_kwargs.enable_thinking=false` for voice latency.
-- ACP is opt-in. Its agent owns context and tools; Sarah does not replay prompts after uncertain results or attach to existing Matrix sessions. Bridge-owned integrations have been removed; configure agent tools and skills on the agent itself.
-- Direct Qwen provides voice conversation without built-in tools. The inherited Home Assistant, SiYuan, Maton Calendar and TV dispatchers and their enable flags have been removed. ACP agent-owned MCP integrations and skills remain independent.
-- Pairing/authentication, request idempotency, history, polling, audio and cancellation retain protocol 1. Health retains the legacy integration capability keys as `false`; the legacy confirmation route always denies authorization. Existing APK/package/signing are unchanged. History/media persist server-side; local Android reset does not erase them.
-
-## Tests
-
-```sh
-cd server
-.venv/bin/python -m pytest -q
-```
-
-Tests use synthetic credentials and loopback/mock services, never the real Qwen server. See `VALIDATION.md` for live-test results and limits. Android build prerequisites and private-signing limitations remain in `android/README.md`; no rebuilt APK is implied.
+Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Validation](VALIDATION.md) records current results and limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.

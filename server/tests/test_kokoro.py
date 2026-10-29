@@ -29,7 +29,7 @@ class KokoroContract(unittest.IsolatedAsyncioTestCase):
                 Path(args[4]).write_bytes(b'synthetic wav')
         with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', process):
             target = Path(tmp) / 'out.mp3'
-            await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak('Hello example. State verified.', target)
+            await runtime.SpeechRuntime().speak('Hello example. State verified.', target)
             self.assertEqual(target.read_bytes(), b'synthetic encoded audio')
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
             self.assertEqual(list(Path(tmp).iterdir()), [target])
@@ -45,6 +45,6 @@ class KokoroContract(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', fail):
             target = Path(tmp) / 'out.mp3'
             with self.assertRaisesRegex(RuntimeError, '^local_tts_failed$'):
-                await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak('Hello.', target)
+                await runtime.SpeechRuntime().speak('Hello.', target)
             self.assertEqual(list(Path(tmp).iterdir()), [])
         self.assertEqual(len(calls), 1)
