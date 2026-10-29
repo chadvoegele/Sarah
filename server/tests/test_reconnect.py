@@ -13,7 +13,7 @@ class Adapter:
     ready=True
     calls=0
     def transcribe(self, path):return 'synthetic'
-    async def reply(self, text, history):
+    async def reply_turn(self, text, history, *, device, conversation):
         self.calls+=1
         await asyncio.sleep(0.05)
         return 'reply'

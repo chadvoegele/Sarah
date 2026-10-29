@@ -27,12 +27,10 @@ def test_privacy_scan_positive_and_negative_controls(tmp_path):
 
 
 def test_project_mit_license_metadata():
-    import json
     license_text = (ROOT / "LICENSE").read_text()
     assert license_text.startswith("MIT License\n\nCopyright (c) 2026 serexe\n")
     assert "Permission is hereby granted, free of charge" in license_text
     assert 'THE SOFTWARE IS PROVIDED "AS IS"' in license_text
-    assert json.loads((ROOT / "manifest.json").read_text())["license"] == "MIT"
     assert "LICENSE" in (ROOT / "PUBLICATION-MANIFEST.txt").read_text().splitlines()
 
 

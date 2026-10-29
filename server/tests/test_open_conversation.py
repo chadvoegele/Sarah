@@ -1,26 +1,19 @@
-"""Real direct-model HTTP voice flow with synthetic SSE and local speech fixtures."""
+"""Authenticated HTTP voice flow through production ACP over a loopback Unix peer."""
 import asyncio
 import io
-import json
-import tempfile
 import unittest
 import wave
-from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 from bridge.core import Store
-from bridge.runtime import VoiceRuntime
 from bridge.server import make_app
-import test_runtime as fixtures
+from acp_fixture import ACPFixture
 
 
-class Conversation(unittest.IsolatedAsyncioTestCase):
+class Conversation(ACPFixture, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.tmp.name)/'state.db')
-        self.store.provision('one', 'a'*48)
-        self.store.provision('two', 'b'*48)
-        self.adapter = VoiceRuntime(fixtures.module.LLMConfig(fixtures.BASE, 'synthetic-qwen', 'synthetic'))
+        await super().asyncSetUp()
+        self.adapter = self.runtime
         self.transcript = 'Hello Sarah'
         self.adapter.transcribe = lambda path: self.transcript
         self.spoken = []
@@ -41,17 +34,13 @@ class Conversation(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.close()
-        self.store.close()
-        self.tmp.cleanup()
+        await super().asyncTearDown()
 
     def auth(self, other=False):
         return {'Authorization':'Bearer '+('b' if other else 'a')*48}
 
-    def model(self, *answers):
-        return fixtures.Transport([(200, fixtures.Stream([
-            ('data: '+json.dumps(event)+'\n\n').encode() for event in
-            (fixtures.text_events(answer) if isinstance(answer, str) else answer)]))
-            for answer in answers])
+    def prompts(self):
+        return [m['params'] for m in self.requests if m['method']=='session/prompt']
 
     async def submit(self, key='one', conversation=None, data=None):
         return await self.client.post('/v1/turns', data=self.wav if data is None else data,
@@ -69,43 +58,41 @@ class Conversation(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(.01)
 
     async def test_voice_history_audio_and_conversation_isolation(self):
-        with self.model('Hello', 'A followup', 'Fresh reply') as transport:
-            first = await self.finished(await self.submit())
-            self.assertEqual(first['state'], 'done')
-            self.assertEqual(first['detail'], 'Hello')
-            self.assertTrue(first['audio'])
-            audio = await self.client.get('/v1/turns/'+first['id']+'/audio', headers=self.auth())
-            self.assertEqual(await audio.read(), b'synthetic MP3')
-            self.assertEqual(audio.content_type, 'audio/mpeg')
-            self.assertEqual(audio.headers['Cache-Control'], 'no-store')
-            self.assertEqual((await self.client.get('/v1/turns/'+first['id']+'/audio', headers=self.auth(True))).status, 403)
-            self.transcript = 'And then?'
-            second = await self.finished(await self.submit('two'))
-            self.assertEqual(second['detail'], 'A followup')
-            fresh = self.store.conversation('one')
-            foreign = self.store.conversation('two')
-            self.store.finish('two', self.store.admit('two',foreign,'private','hash'), 'done','private answer','private prompt')
-            third = await self.finished(await self.submit('three', conversation=fresh))
-            self.assertEqual(third['detail'], 'Fresh reply')
-        payloads = [json.loads(request.content) for request in transport.requests]
-        self.assertEqual(payloads[1]['messages'][1:], [
-            {'role':'user','content':'Hello Sarah'}, {'role':'assistant','content':'Hello'},
-            {'role':'user','content':'And then?'}])
-        self.assertEqual(payloads[2]['messages'][1:], [{'role':'user','content':'And then?'}])
+        self.answers = ['Hello', 'A followup', 'Fresh reply']
+        first = await self.finished(await self.submit())
+        self.assertEqual(first['state'], 'done')
+        self.assertEqual(first['detail'], 'Hello')
+        self.assertTrue(first['audio'])
+        audio = await self.client.get('/v1/turns/'+first['id']+'/audio', headers=self.auth())
+        self.assertEqual(await audio.read(), b'synthetic MP3')
+        self.assertEqual(audio.content_type, 'audio/mpeg')
+        self.assertEqual(audio.headers['Cache-Control'], 'no-store')
+        self.assertEqual((await self.client.get('/v1/turns/'+first['id']+'/audio', headers=self.auth(True))).status, 403)
+        self.transcript = 'And then?'
+        second = await self.finished(await self.submit('two'))
+        self.assertEqual(second['detail'], 'A followup')
+        fresh = self.store.conversation('one')
+        foreign = self.store.conversation('two')
+        self.store.finish('two', self.store.admit('two',foreign,'private','hash'), 'done','private answer','private prompt')
+        third = await self.finished(await self.submit('three', conversation=fresh))
+        self.assertEqual(third['detail'], 'Fresh reply')
+        prompts = self.prompts()
+        self.assertEqual(prompts[0]['sessionId'], prompts[1]['sessionId'])
+        self.assertNotEqual(prompts[1]['sessionId'], prompts[2]['sessionId'])
+        self.assertEqual(prompts[1]['prompt'], [{'type':'text','text':'And then?'}])
+        self.assertEqual(prompts[2]['prompt'], [{'type':'text','text':'And then?'}])
         self.assertEqual(self.spoken, ['Hello', 'A followup', 'Fresh reply'])
-        for payload in payloads:
-            for key in ('tools', 'tool_choice', 'parallel_tool_calls'):
-                self.assertNotIn(key, payload)
+        self.assertEqual(len([m for m in self.requests if m['method']=='session/load']), 1)
 
     async def test_duplicate_and_conflicting_upload_never_replay(self):
-        with self.model('Only once') as transport:
-            first = await self.finished(await self.submit())
-            again = await self.finished(await self.submit())
-            self.assertEqual(again['id'], first['id'])
-            changed = bytearray(self.wav); changed[-1] = 1
-            self.assertEqual((await self.submit(data=bytes(changed))).status, 409)
-            self.assertEqual((await self.submit(conversation=self.store.conversation('one'))).status, 409)
-        self.assertEqual(len(transport.requests), 1)
+        self.answers = ['Only once']
+        first = await self.finished(await self.submit())
+        again = await self.finished(await self.submit())
+        self.assertEqual(again['id'], first['id'])
+        changed = bytearray(self.wav); changed[-1] = 1
+        self.assertEqual((await self.submit(data=bytes(changed))).status, 409)
+        self.assertEqual((await self.submit(conversation=self.store.conversation('one'))).status, 409)
+        self.assertEqual(len(self.prompts()), 1)
         self.assertEqual(self.spoken, ['Only once'])
         reopened = Store(self.store.path)
         try:
@@ -115,48 +102,78 @@ class Conversation(unittest.IsolatedAsyncioTestCase):
         finally:
             reopened.close()
 
-    async def test_model_tool_request_fails_without_speech_or_retry(self):
-        events = fixtures.tool_events({'call_id':'unsupported', 'name':'ha_call_service', 'arguments':'{}'})
-        with self.model(events) as transport:
-            result = await self.finished(await self.submit())
-        self.assertEqual(result['state'], 'error')
-        self.assertFalse(result['audio'])
+    async def test_transport_failure_no_speech_or_replay(self):
+        self.mode = 'drop'
+        first = await self.finished(await self.submit())
+        self.assertEqual(first['state'], 'error')
+        self.assertFalse(first['audio'])
+        self.assertEqual(self.binding()['state'], 'uncertain')
+        self.mode = 'normal'
+        second = await self.finished(await self.submit('two'))
+        self.assertEqual(second['state'], 'error')
+        self.assertEqual(len(self.prompts()), 1)
         self.assertEqual(self.spoken, [])
-        self.assertEqual(len(transport.requests), 1)
         self.assertEqual(list((self.store.path.parent/'media').iterdir()), [])
 
-    async def test_recent_history_is_bounded(self):
-        for index in range(6):
-            turn = self.store.admit('one',self.conversation,'prior'+str(index),'hash')
-            self.store.finish('one',turn,'done','answer'+str(index),'prompt'+str(index))
-        with self.model('Bounded') as transport:
-            await self.finished(await self.submit())
-        messages = json.loads(transport.requests[0].content)['messages']
-        self.assertEqual(len(messages), 10)  # System, four pairs, current user.
-        self.assertEqual(messages[1], {'role':'user','content':'prompt2'})
-
-    async def test_invalid_wav_and_foreign_conversation_refused_before_model(self):
-        with self.model() as transport:
-            self.assertEqual((await self.submit(data=b'invalid')).status, 403)
-            self.assertEqual((await self.submit(conversation=self.store.conversation('two'))).status, 403)
-        self.assertEqual(transport.requests, [])
+    async def test_invalid_wav_and_foreign_conversation_refused_before_acp(self):
+        self.assertEqual((await self.submit(data=b'invalid')).status, 403)
+        self.assertEqual((await self.submit(conversation=self.store.conversation('two'))).status, 403)
+        self.assertEqual(self.requests, [])
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM turns').fetchone()[0], 0)
 
-    async def test_health_and_legacy_confirmation_fail_closed(self):
+    async def test_health_and_removed_confirmation_contract(self):
         health = await (await self.client.get('/v1/health', headers=self.auth())).json()
         self.assertEqual(health['protocol'], 1)
         self.assertTrue(health['ready'])
+        self.assertEqual(health['backend'], 'acp')
         for key in ('tools','home_assistant','siyuan','calendar','tvtime'):
-            self.assertIs(health[key], False)
+            self.assertNotIn(key, health)
         turn = self.store.admit('one',self.conversation,'legacy','hash')
         route = '/v1/turns/'+turn+'/confirmation'
         value = {'conversation':self.conversation,'nonce':'legacy','action_hash':'legacy','accept':True}
         self.assertEqual((await self.client.post(route,json=value)).status, 403)
-        self.assertEqual((await self.client.post(route,headers=self.auth(True),json=value)).status, 403)
-        for accept in (True,False,'true',None):
-            response = await self.client.post(route,headers=self.auth(),json={**value,'accept':accept})
-            self.assertEqual(response.status, 403)
-            self.assertEqual(await response.json(), {'error':'confirmation_unavailable'})
+        for auth in (self.auth(), self.auth(True)):
+            self.assertEqual((await self.client.post(route,headers=auth,json=value)).status, 404)
         self.assertEqual(self.store.get('one',turn)['state'], 'transcribing')
         result = await (await self.client.get('/v1/turns/'+turn,headers=self.auth())).json()
         self.assertNotIn('confirmation', result)
+        self.assertEqual(self.requests, [])
+
+    async def test_text_preserved_when_tts_fails(self):
+        async def fail(text, path):
+            path.write_bytes(b'partial')
+            raise RuntimeError('synthetic TTS failure')
+        self.adapter.speak = fail
+        self.answers = ['Answer preserved']
+        result = await self.finished(await self.submit())
+        self.assertEqual(result['state'], 'done')
+        self.assertEqual(result['detail'], 'Answer preserved')
+        self.assertFalse(result['audio'])
+        self.assertEqual((await self.client.get('/v1/turns/'+result['id']+'/audio',headers=self.auth())).status, 403)
+        self.assertEqual(list((self.store.path.parent/'media').iterdir()), [])
+
+    async def test_lost_202_lookup_is_read_only(self):
+        response = await self.submit('lost-response')
+        self.assertEqual(response.status, 202)
+        response.release()
+        async with asyncio.timeout(2):
+            while self.store.by_request('one','lost-response')['state'] != 'done':
+                await asyncio.sleep(.01)
+        row = await (await self.client.get('/v1/requests/lost-response',headers=self.auth())).json()
+        for _ in range(3):
+            lookup = await self.client.get('/v1/requests/lost-response',headers=self.auth())
+            self.assertEqual((await lookup.json())['id'], row['id'])
+        self.assertEqual((await self.client.get('/v1/requests/lost-response',headers=self.auth(True))).status, 403)
+        self.assertEqual(len(self.prompts()), 1)
+
+    async def test_rate_and_body_bounds_before_dispatch(self):
+        response = await self.client.post('/v1/turns',data=b'x'*(4*1024*1024+1),
+            headers={**self.auth(),'Content-Type':'audio/wav','X-Conversation':self.conversation,'Idempotency-Key':'large'})
+        self.assertEqual(response.status, 413)
+        # Per-device rate limit covers every authenticated route, including health.
+        response = None
+        for _ in range(90):
+            response = await self.client.get('/v1/health',headers=self.auth())
+        self.assertEqual(response.status, 429)
+        self.assertEqual((await self.client.get('/v1/health',headers=self.auth(True))).status, 200)
+        self.assertEqual(self.requests, [])

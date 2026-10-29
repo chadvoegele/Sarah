@@ -1,47 +1,14 @@
-"""OpenAI-compatible local-model voice conversation without built-in tools."""
+"""Local transcription, speech formatting and bounded synthesis for the ACP relay."""
 import asyncio
 import os
-import json
 import re
 import threading
 from pathlib import Path
-import httpx
 from .clock import spoken_clocks
 from faster_whisper import WhisperModel
 
-from .llm_config import LLMConfig
-
-LLM_TOTAL_SECONDS = 90
-SSE_LINE_BYTES = 64 * 1024
-SSE_TOTAL_BYTES = 1024 * 1024
 TTS_STAGE_SECONDS = 20
 TTS_TERMINATE_GRACE = 1
-
-
-async def _sse_lines(response, deadline):
-    # Raw identity bytes: do not let iter_lines or decompression accumulate an
-    # unbounded line before our limits run. Count comments/metadata too.
-    if response.headers.get('content-encoding', 'identity') != 'identity':
-        raise RuntimeError('llm_sse_encoding_denied')
-    pending = bytearray()
-    total = 0
-    async for chunk in response.aiter_raw():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise TimeoutError('llm_deadline')
-        total += len(chunk)
-        if total > SSE_TOTAL_BYTES:
-            raise RuntimeError('llm_sse_total_too_large')
-        # Explicit LF boundaries preserve split UTF-8 and unfinished lines.
-        pieces = chunk.split(b'\n')
-        for index, piece in enumerate(pieces):
-            if len(pending) + len(piece) > SSE_LINE_BYTES:
-                raise RuntimeError('llm_sse_line_too_large')
-            pending.extend(piece)
-            if index < len(pieces) - 1:
-                yield bytes(pending).rstrip(b'\r').decode('utf-8')
-                pending.clear()
-    if pending:
-        yield bytes(pending).rstrip(b'\r').decode('utf-8')
 
 
 async def _settle(task):
@@ -149,7 +116,7 @@ def speech_text(text):
 
 
 class SpeechRuntime:
-    """Local speech shared by the direct-model and ACP backends."""
+    """Local-only speech used by the ACP relay."""
     def __init__(self):
         self.whisper = None
         self.lock = threading.Lock()
@@ -173,7 +140,7 @@ class SpeechRuntime:
         root = Path(os.getenv('R1_KOKORO_ROOT', str(Path(__file__).resolve().parents[1]/'.build/kokoro-audition')))
         # Same-filesystem private scratch; final media name never holds partial
         # output. No await between successful encode and atomic publication.
-        with tempfile.TemporaryDirectory(prefix='.r1-tts-', dir=path.parent) as tmp:
+        with tempfile.TemporaryDirectory(prefix='.sarah-tts-', dir=path.parent) as tmp:
             wav=Path(tmp)/'speech.wav'
             encoded=Path(tmp)/'speech.mp3'
             await _tts_process(str(root/'venv/bin/python'), '-I',
@@ -186,76 +153,3 @@ class SpeechRuntime:
                 raise RuntimeError('tts_encoding_failed')
             encoded.chmod(0o600)
             encoded.replace(path)
-
-
-class VoiceRuntime(SpeechRuntime):
-    ready = True
-    reason = 'Local-model voice conversation; no bridge-owned tools'
-    def __init__(self, config=None):
-        super().__init__()
-        config = config or LLMConfig.from_env()
-        self.base_url = config.base_url
-        self.api_key = config.api_key
-        self.model = config.model
-
-    async def reply(self, text, history=()):
-        # One total deadline; cancellation closes the owned upstream socket.
-        deadline = asyncio.get_running_loop().time() + LLM_TOTAL_SECONDS
-        async with asyncio.timeout_at(deadline):
-            return await self._reply(text, history, deadline)
-
-    async def _reply(self, text, history, deadline):
-        instructions = (
-            'You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. '
-            'This identity applies only to this R1 instance. '
-            'Reply briefly in plain spoken English. No tools or actions are available. '
-            'Never claim actions were performed.')
-        messages = [{'role':'system', 'content':instructions}, *history,
-                    {'role':'user', 'content':text}]
-        payload = {'model':self.model, 'messages':messages, 'stream':True,
-                   'max_tokens':2048, 'chat_template_kwargs':{'enable_thinking':False}}
-        headers = {'Accept':'text/event-stream', 'Accept-Encoding':'identity'}
-        if self.api_key:
-            headers['Authorization'] = 'Bearer ' + self.api_key
-        # Explicit origin only: no pool, fallback, redirects, proxies, or retries.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=15),
-                                     follow_redirects=False, trust_env=False) as client:
-            async with client.stream('POST', self.base_url+'/chat/completions',
-                                     headers=headers, json=payload) as response:
-                if response.status_code != 200:
-                    raise RuntimeError('llm_http_'+str(response.status_code))
-                parts=[]; output_chars=0; completed=None
-                async for line in _sse_lines(response, deadline):
-                    if not line.startswith('data:'):
-                        continue
-                    data=line[5:].strip()
-                    if data=='[DONE]':
-                        break
-                    event=json.loads(data)
-                    if event.get('error'):
-                        raise RuntimeError('llm_response_failed')
-                    choices=event.get('choices', [])
-                    if not choices:
-                        continue  # Usage-only chunk.
-                    if len(choices)!=1 or choices[0].get('index',0)!=0:
-                        raise RuntimeError('llm_invalid_choices')
-                    choice=choices[0]; delta=choice.get('delta') or {}
-                    content=delta.get('content') or ''
-                    if not isinstance(content,str):
-                        raise RuntimeError('llm_invalid_content')
-                    output_chars+=len(content)
-                    if output_chars>12000:
-                        raise RuntimeError('reply_too_long')
-                    parts.append(content)
-                    # reasoning_content is intentionally never displayed/spoken.
-                    if delta.get('tool_calls') or delta.get('function_call'):
-                        raise RuntimeError('llm_tool_denied')
-                    if choice.get('finish_reason') is not None:
-                        completed=choice['finish_reason']
-                        break  # Terminal, even if upstream never sends EOF.
-        if completed in ('tool_calls', 'function_call'):
-            raise RuntimeError('llm_tool_denied')
-        result=''.join(parts).strip()
-        if completed!='stop' or not result:
-            raise RuntimeError('llm_incomplete_response')
-        return result

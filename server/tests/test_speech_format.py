@@ -1,6 +1,5 @@
 """Speech-only Markdown cleanup; literal values and displayed answers survive."""
 import tempfile
-import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,7 +33,7 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime.speech_text(text), text)
         self.assertEqual(runtime.speech_text(r'Literal \* and `a*b*c` and `#42`.'), 'Literal * and a*b*c and #42.')
 
-    async def test_server_display_and_history_keep_original_provider_answer(self):
+    async def test_server_display_keeps_original_agent_answer(self):
         from test_open_conversation import Conversation
         case = Conversation('test_voice_history_audio_and_conversation_isolation')
         await case.asyncSetUp()
@@ -44,17 +43,18 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
                 seen.append(input.decode())
             Path(args[-1]).write_bytes(b'test encoded audio')
         async def speak(text, path):
-            await runtime.VoiceRuntime.speak(case.adapter, text, path)
+            await runtime.SpeechRuntime.speak(case.adapter, text, path)
         try:
             prose = '## Oven\n- **GE Café:** `CTC912P2NS1`, **$100.50**.'
             case.adapter.speak = speak
-            with patch.object(runtime, '_tts_process', process), case.model(prose, 'Followup') as transport:
+            case.answers = [prose, 'Followup']
+            with patch.object(runtime, '_tts_process', process):
                 row = await case.finished(await case.submit())
                 self.assertEqual(row['detail'], prose)
                 self.assertEqual(seen, ['Oven\nGE Café: CTC912P2NS1, one hundred dollars and fifty cents.'])
                 await case.finished(await case.submit('followup'))
-                self.assertIn({'role':'assistant', 'content':prose},
-                              json.loads(transport.requests[-1].content)['messages'][1:])
+                self.assertEqual(case.prompts()[-1]['prompt'], [{'type':'text','text':'Hello Sarah'}])
+                self.assertEqual(case.store.get('one',row['id'])['detail'], prose)
         finally:
             await case.asyncTearDown()
 
@@ -66,7 +66,7 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
                 seen.append(input.decode())
             Path(args[-1]).write_bytes(b'test encoded audio')
         with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', process):
-            await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original, Path(tmp)/'out.mp3')
+            await runtime.SpeechRuntime().speak(original, Path(tmp)/'out.mp3')
         self.assertEqual(seen, ['Appliances\nBosch: SHP78CM6N, twenty three thousand five hundred one dollars and seventy seven cents.'])
         self.assertEqual(original, '## Appliances\n- **Bosch:** `SHP78CM6N`, **$23,501.77**.')
 
@@ -94,5 +94,5 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
                         seen.append(input.decode())
                     Path(args[-1]).write_bytes(b'test encoded audio')
                 with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', process):
-                    await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original, Path(tmp)/'out.mp3')
+                    await runtime.SpeechRuntime().speak(original, Path(tmp)/'out.mp3')
                 self.assertEqual(seen, [expected])

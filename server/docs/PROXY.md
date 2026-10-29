@@ -18,7 +18,7 @@ An explicit proxy-only mode is available:
 python -m bridge.server --db state.db --http --bind 127.0.0.1 --port 8789
 ```
 
-`--http` rejects non-loopback/hostname binds and certificate options. Do not expose plaintext bearer credentials on a LAN/VPN listener. The supplied container uses host networking so its loopback listener is directly reachable by a host-network nginx, but not by remote clients. Only nginx's HTTPS port should be reachable over LAN/VPN.
+`--http` rejects non-loopback/hostname binds and certificate options. Do not expose plaintext bearer credentials on a LAN/VPN listener. The deployment proposal uses host networking so its loopback listener is directly reachable by a host-network nginx, but not by remote clients. Only nginx's HTTPS port should be reachable over LAN/VPN.
 
 ## Device key provisioning
 
@@ -46,4 +46,4 @@ location /v1/ {
 
 Enter `https://bridge.example.invalid` and the Sarah device/API token in Android Connection settings. Do not enter an agent/Codex/llama credential. With a publicly trusted HTTPS certificate, leave the private-CA field empty. DNS and routing must make this host reachable from the phone/VPN; a successful test from the bridge host does not prove a particular VPN client's configuration.
 
-The ACP backend, tool trust and persistent session behavior remain documented in [ACP.md](ACP.md). The app is independent of which server backend is selected.
+The ACP backend, tool trust and persistent session behavior remain documented in [ACP.md](ACP.md). ACP is the only/default backend; existing `SARAH_BACKEND=acp` configuration remains valid. The Dockerfile, entrypoint, speech paths and private key contract are unchanged.

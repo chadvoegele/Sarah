@@ -37,6 +37,6 @@ class ClockSpeech(unittest.IsolatedAsyncioTestCase):
             if input is not None: seen.append(input.decode())
             Path(args[-1]).write_bytes(b'offline audio fixture')
         with tempfile.TemporaryDirectory() as tmp, patch.object(runtime,'_tts_process',process):
-            await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original,Path(tmp)/'out.mp3')
+            await runtime.SpeechRuntime().speak(original,Path(tmp)/'out.mp3')
         self.assertEqual(seen,['Test event on 2026-10-24 at 2026-10-24 at ten P M.'])
         self.assertEqual(original,'Test event on 2026-10-24 at 2026-10-24T22:00:00Z.')

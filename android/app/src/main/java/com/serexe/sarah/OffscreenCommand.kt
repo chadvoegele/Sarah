@@ -129,9 +129,8 @@ internal class OffscreenCommand(
      }
      stage("done");return
     }
-    "confirming" -> {state.put("phase","uncertain");vault.save(state);stage("confirmation-required");return}
     "error","cancelled","uncertain" -> {state.put("phase",row.optString("state"));vault.save(state);stage(row.optString("state"));return}
-    "transcribing","thinking","acting","speaking" -> stage("polling")
+    "transcribing","thinking","speaking" -> stage("polling")
     else -> {stage("uncertain");return}
    }
    delay(delayMs);delayMs=minOf(delayMs+500,5000)
