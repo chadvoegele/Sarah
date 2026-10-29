@@ -9,7 +9,7 @@ must be retained; this code3 note does not supersede them.
   `META-INF/LICENSE` retained byte-for-byte. Its Apache-2.0 license is also copied to
   `CODE3-GRADLE-APACHE-2.0.txt`. No wrapper classes were modified.
 - Android/Kotlin/AndroidX/OkHttp/coroutines/JUnit and test dependencies are declared,
-  not vendored here. See DEPENDENCIES.md for the historical direct inventory and its
+  not vendored here. See THIRD-PARTY-NOTICES.md for the historical direct inventory and its
   explicit preliminary/unreviewed transitive-license boundary.
 - `org.json:json:20240303` is a historical test-only dependency under the JSON.org
   license (including its “Good, not Evil” condition). It is not MIT or OSI-approved;
