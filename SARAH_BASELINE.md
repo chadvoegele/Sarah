@@ -1,42 +1,23 @@
-# Android golden v44
+# Android golden v50
 
-User-authorized cumulative accepted source and public ARM64 phone APK. Golden means approved development baseline, not comprehensive device/runtime certification.
+Owner-approved development baseline: the **original, exact v50 ARM64 review APK** and a reconstructed public Android source line. Golden means approved future baseline, **not** proven exact source-to-binary reproducibility or physical-device validation.
 
-- APK: [sarah-v44-golden-arm64.apk](https://github.com/serexe/sarah-r1/releases/download/android-golden-v44/sarah-v44-golden-arm64.apk)
-- Package: `com.serexe.sarah`
-- Version code: **44**; version name: `0.1.44-golden`
-- ABI: **arm64-v8a only**; five native libraries verified as AArch64.
-- Size: **47332923 bytes**
-- SHA-256: `a4e26bad8ce1351d1d8faafb75b12437e4c8554f9a1eead175d2f1dd8e7e3c4f`
-- Signer SHA-256: `79c9b26baac4b0b60563430ebdf0023808cdf4e04b4d1d719fa950a7f3d5fa7d`
-- Build: **signed local-review/debug build; debuggable; not a production-signed consumer release**. Same signer/package as preceding review APKs; metadata/signature upgrade-compatible. Physical upgrade of these rebuilt bytes remains pending.
-- Annotated golden tag: `android-golden-v44`.
-- Exact public build-source commit: `c860714267527376c592756462764142bc2e5dbf`.
-- Exact source tree: `a76210fc23ba71799d6e6268e49a172dedfdc189`.
-- Release: https://github.com/serexe/sarah-r1/releases/tag/android-golden-v44
+- APK: [SARAH-0.1.50+50-timer-countdown-arm64-review.apk](https://github.com/serexe/sarah-r1/releases/tag/android-golden-v50)
+- Package: `com.serexe.sarah`; versionCode **50**; versionName `0.1.50-timer-countdown-review`.
+- ABI: **arm64-v8a only**; signed local-review/debug build, debuggable, **not production-signed**.
+- Size: **47,382,487 bytes**; SHA-256 `747d11dbc983816e5e30c493fbc9a1756f9a0fd057e915f60d120046cd7e0b54`.
+- Signer SHA-256 `79c9b26baac4b0b60563430ebdf0023808cdf4e04b4d1d719fa950a7f3d5fa7d` (same local-review signer as v44).
+- Annotated tag `android-golden-v50`; public reconstructed-source commit `076e9db75de04614112e51291d7f3e269271af86`, tree `0136e3e84787f69ddae53299789b12e5a50261de`.
+- [Release](https://github.com/serexe/sarah-r1/releases/tag/android-golden-v50) · [Detailed source/proof boundary](android/GOLDEN50-SOURCE.md).
 
-## Included accepted work
+## Provenance boundary
 
-Cumulative earlier Companion UI, waveform and response-speed work; retained warm local voice worker and opt-in first-sentence MP3 sequence with bounded acknowledgement/backpressure; bounded warm ACP conversation worker reuse with per-turn ownership and fail-closed uncertainty; uncertain-request reconciliation, retained submission diagnostics, explicit sanitized Send/Share diagnostics, and exact-approved local-recovery source.
+The Android source was reconstructed after the approved APK build. The later alternate APK differs only in `classes3.dex`; the alternate raw timer-ID UI row was excluded. No immutable original pre-alternate source snapshot or build manifest establishes that the tagged source commit generated these APK bytes. The tag is **reconstructed development baseline**, not a reproducible-build assertion. GitHub's generated source archive is not a proven build input. The APK was **not rebuilt, resigned or substituted** for this publication.
 
-This public bridge is the maintained sanitized variant, not a wholesale copy of a private deployment. Diagnostics routes retain the existing authentication guard. Publication does not deploy/restart a bridge, repair a binding, replay a request, alter pairing/history/ACK state, or install an APK.
+The Android line includes local schedules, phone media, countdown/Cancel/Stop UI and v50 recovery safeguards. Public bridge source remains the sanitized mainline, not the private runtime; schedule/media backend routes and private configuration are **not published or deployed** by this promotion. Configure a compatible bridge separately. No private pairing, state, token, signing input or test-only key fixture is supplied. Earlier v44 [release](https://github.com/serexe/sarah-r1/releases/tag/android-golden-v44) remains historical.
 
-## Public build differs from private v43 candidate
+## Actual checks and remaining limits
 
-Earlier v43 behavior was manually accepted. That candidate embedded private one-off request/conversation approval hashes. Its APK is **not** published publicly. Public v44 retains the same Android source except version metadata; private recovery approval inputs are deliberately omitted. Thus exact-target recovery is disabled/fail-closed in this public build, not generalized to other requests. No private identifiers, target hashes, pairing, credentials or state are supplied. Do not reset/re-pair or resend an uncertain request to bypass a recovery guard.
+Original exact APK passed prior isolated synthetic VM countdown, exact Cancel, expiry and Stop. In this public source checkout, Kotlin compiled and focused new timer/schedule/media/recovery JVM tests passed. A broader three-class test run had **65 tests, 2 failures** in older `SarahViewModelTest` assertions (expected `done`/`uncertain`, observed `ready`); not a full green suite. Exact source-to-APK reproducibility, physical phone install/upgrade, acoustic alert/voice cancellation, live bridge integration, screen-off wake and battery behavior remain unverified. Privacy scan of outgoing blobs/metadata and APK ZIP/Dex/resources was bounded and heuristic, not a security certification. No bridge restart, phone install or VM test occurred during promotion.
 
-The v44 APK was rebuilt once for public-safe inputs and a unique version code. Prior phone acceptance is not relabeled as testing these new bytes. Native libraries and assets (17 entries) and permissions are byte-identical/equal to v43. Signing and alignment verified.
-
-## Actual checks and limits
-
-- Final `assembleDebug` and focused JVM checks: **BUILD SUCCESSFUL**; **15 tests passed**, zero failures/errors/skips (exact recovery, sanitized diagnostics and existing resolved-cancellation handoff).
-- Final public bridge composition: **18 synthetic tests passed**, covering warm ACP reuse/ownership/cancellation, sentence MP3 ordering/backpressure/acknowledgement, warm voice cleanup and authenticated diagnostics. No production model/tool traffic.
-- `git diff --check`; APK package/version/ABI/ELF/signature/alignment/permissions/hash verification; private approval/signing-input byte scan; newly reachable source blobs and commit metadata privacy review. Heuristic privacy checks are not security certification.
-- Existing stage benchmarks and user warm-response acceptance do not measure phone first-audible latency. No first-audible or comprehensive physical Stop/screen-off/wake/battery guarantee.
-- **Pending:** physical update-install and runtime validation of this exact v44 APK; device layout/font/History, sentence playback/codec feel, Stop followed by the next question, successive offscreen wakes and battery behavior. No VM/emulator/device install or lifecycle operation occurred during release work.
-
-Historical tags/releases remain unchanged. Original snapshot, licensing/dependency and upstream-notice limitations still apply.
-
-## Future work baseline
-
-Branch from current `main`; preserve the annotated golden tag and exact APK. **Android versionCode floor is 44**: future APKs must use a greater code. Main may add baseline/download documentation after the tag; this APK is tied to the exact source commit/tree above, not later docs. Do not copy private deployment/configuration/state into this repository or its release assets.
+For an existing installation, update-install without uninstall, clearing data or resetting pairing; package/signer compatibility alone does not prove upgrade success. **Future versionCode must exceed 50.** Branch from current `main` and preserve annotated tag plus exact approved APK. Licensing/dependency and historical source limits remain as documented.

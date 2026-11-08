@@ -1,6 +1,6 @@
 # S.A.R.A.H Android
 
-Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory carries cumulative **[Android golden v44](../SARAH_BASELINE.md)** source, evolved from the original sanitized snapshot. Public ARM64 APK is a signed local-review/debug build, not production-signed; source-tree identity, omitted private recovery approval and pending rebuilt-byte phone checks are recorded in the baseline. The repository's existing `app/` remains the separate Ubuntu Touch client.
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory carries cumulative **[Android golden v50](../SARAH_BASELINE.md)** reconstructed development source, evolved from the original sanitized snapshot. Public ARM64 APK is the unchanged owner-approved local-review/debug build, not production-signed. **Exact source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The repository's existing `app/` remains the separate Ubuntu Touch client.
 
 ## Included source
 
@@ -8,7 +8,7 @@ Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This director
 - Android assistant-role entry points and an explicitly enabled foreground-microphone service for local “Hey Sarah” detection.
 - Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-The current source/APK version is `0.1.44-golden` (version code `44`), package `com.serexe.sarah`, ARM64 only. APK identity is verified; installed-device behavior of rebuilt v44 is not established by promotion. Physical-phone black-screen behavior, battery use and wake reliability are not established by publication.
+The current source/APK version is `0.1.50-timer-countdown-review` (version code `50`), package `com.serexe.sarah`, ARM64 only. The source includes local schedules, phone media and timer countdown/Cancel/Stop UI; compatible backend routes are not part of this Android-only promotion. APK identity is verified, but its exact build source is not. Physical-phone installation, upgrade, voice cancellation/acoustics, battery use and wake reliability are not established by publication.
 
 ## Privacy and setup
 
@@ -28,11 +28,11 @@ From this directory, the ordinary source checks are:
 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 ```
 
-Golden v44 debug assembly succeeded with 15 focused JVM tests; 18 synthetic public-bridge tests also passed. These are not full-suite, lint or physical-device proof. No install or live restart occurred. See the baseline for exact scope.
+For v50, Kotlin compiled and focused new JVM cases passed. A broader three-class run had 65 tests and 2 older `SarahViewModelTest` expectation failures, disclosed in the baseline; no claim of a green full suite or lint. Prior exact-APK isolated VM synthetic timer/countdown proof is separate from this source checkout. No new build, install or live restart occurred during promotion.
 
-The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent from source control. Debug APK assembly/install requires your own separately authorized private signing setup. Published v44 uses the existing compatible signer; no new key was generated. Do not commit signing materials. Release signing is not configured here.
+The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent from source control. Debug APK assembly/install requires your own separately authorized private signing setup. Published v50 uses the existing compatible signer; no new key was generated. Do not commit signing materials. Release signing is not configured here.
 
-Exact-approved local recovery uses optional `.local-review/exact-local-recovery.properties` build inputs. Missing input disables it/fails closed. Public v44 deliberately omits the private one-off target hashes. Do not broaden the target, clear state or replay an uncertain request to bypass this boundary.
+Exact-approved local recovery uses optional `.local-review/exact-local-recovery.properties` build inputs. Missing input disables it/fails closed. No private one-off target hashes or signing inputs are supplied with this source. Do not broaden the target, clear state or replay an uncertain request to bypass this boundary.
 
 Environment-specific installed-APK instrumentation harnesses, their certificate/key containers and raw audio fixtures were excluded rather than published. The retained screenshot-policy instrumentation test is not the complete private instrumentation suite. Do not infer full device-test reproducibility or prior pass results from this snapshot.
 
