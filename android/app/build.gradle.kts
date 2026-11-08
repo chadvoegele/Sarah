@@ -25,7 +25,7 @@ android {
   }
  }
  defaultConfig {
-  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 44; versionName = "0.1.44-golden"
+  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 50; versionName = "0.1.50-timer-countdown-review"
   testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a") }
   buildConfigField("String", "RECOVERY_REQUEST_HASH", "\"${recoveryHash("requestHash")}\"")
   buildConfigField("String", "RECOVERY_CONVERSATION_HASH", "\"${recoveryHash("conversationHash")}\"")

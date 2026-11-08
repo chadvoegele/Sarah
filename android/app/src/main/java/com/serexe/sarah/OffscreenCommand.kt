@@ -121,6 +121,16 @@ internal class OffscreenCommand(
    val row=bridge.pollCancellable(turn,nextChunk)
    if(!eligible()) return
    if(row.optString("id")!=turn || row.optString("conversation")!=conversation) {stage("uncertain");return}
+   val action=row.optJSONObject("phone_action")
+   if(action!=null && action.optJSONObject("receipt")==null) {
+    if(action.optString("conversation")!=conversation || action.optString("turn")!=turn || row.optString("state") !in setOf("acting","speaking","done")) {stage("uncertain");return}
+    val nonce=action.optString("nonce");val key="$turn:$nonce"
+    val receipt=if(state.optString("phoneActionKey")==key) state.getJSONObject("phoneActionReceipt")
+     else withContext(Dispatchers.IO) {PhoneActionRouter.execute(context,action,conversation,turn)}.also {
+      state.put("phoneActionKey",key).put("phoneActionReceipt",it);vault.save(state)
+     }
+    bridge.phoneReceiptCancellable(turn,conversation,nonce,receipt)
+   }
    val chunks=row.optJSONObject("audio_chunks")
    if(chunks!=null && row.optString("state")=="speaking") {
     val count=chunks.optInt("count",-1);check(count in nextChunk..32)

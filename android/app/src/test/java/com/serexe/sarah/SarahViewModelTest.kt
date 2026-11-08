@@ -63,6 +63,23 @@ class SarahViewModelTest {
   val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},abort,awaitPollSlot={})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
  }
+ @Test fun directTimerStoredReceiptRecoversOnlyExactSingleActionWithoutReplay() {
+  fun action(status:String)=JSONObject().put("conversation","c1").put("turn","t1")
+   .put("command",JSONObject().put("action","create").put("kind","timer"))
+   .put("receipt",JSONObject().put("status",status).put("reply","Timer scheduled"))
+  for((route,receipt,expected) in listOf(Triple("direct_timer","scheduled","ready"),
+   Triple("model","scheduled","uncertain"),Triple("direct_timer","uncertain","uncertain"))) {
+   val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"))
+   f.vm.onForeground()
+   f.wire.row.put("state","uncertain").put("phone_action",action(receipt))
+    .put("timings",JSONObject().put("route",route))
+   f.vm.checkExisting()
+   assertEquals(expected,f.vm.ui.value.phase)
+   assertEquals(1,f.wire.lookups);assertEquals(0,f.wire.posts)
+   assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.confirms);assertEquals(0,f.sound.played)
+   f.vm.onBackground()
+  }
+ }
  @Test fun rejectedSubmissionIsDurableAndMissingLookupNeverClearsOrReplaysIt()=runBlocking {
   val f=fixture();f.mic.endpointReached=true
   f.wire.onSubmit={throw Bridge.Failure(403,"not_found")}

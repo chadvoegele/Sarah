@@ -3,15 +3,30 @@
  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
  <uses-permission android:name="android.permission.WAKE_LOCK"/>
  <uses-permission android:name="android.permission.VIBRATE"/>
  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+ <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+ <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+ <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+ <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
  <application android:name=".SarahApplication" android:label="S.A.R.A.H" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true">
   <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:launchMode="singleTop">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
    <intent-filter><action android:name="android.intent.action.ASSIST"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
   </activity>
   <service android:name=".HeySarahListenerService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false"/>
+  <service android:name=".LocalAlertService" android:exported="false" android:foregroundServiceType="mediaPlayback" android:stopWithTask="false"/>
+  <service android:name=".PhoneMediaService" android:exported="false" android:foregroundServiceType="mediaPlayback" android:stopWithTask="false"/>
+  <receiver android:name=".LocalScheduleReceiver" android:exported="false"/>
+  <receiver android:name=".LocalScheduleBootReceiver" android:exported="true">
+   <intent-filter>
+    <action android:name="android.intent.action.BOOT_COMPLETED"/>
+    <action android:name="android.intent.action.TIME_SET"/>
+    <action android:name="android.intent.action.TIMEZONE_CHANGED"/>
+   </intent-filter>
+  </receiver>
   <service android:name=".SarahVoiceInteractionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION">
    <intent-filter><action android:name="android.service.voice.VoiceInteractionService"/></intent-filter>
    <meta-data android:name="android.voice_interaction" android:resource="@xml/voice_interaction_service"/>

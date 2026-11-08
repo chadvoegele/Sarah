@@ -5,7 +5,10 @@ import java.io.File
 
 /** Upgrade cleanup of legacy plaintext replies before any Activity/service entry. */
 class SarahApplication:Application() {
- override fun onCreate() {super.onCreate();purgeLegacyReplies(cacheDir)}
+ override fun onCreate() {
+  super.onCreate();purgeLegacyReplies(cacheDir)
+  runCatching {localSchedule(this).reconcile()} // no permission => no false acceptance or dispatch
+ }
 }
 
 internal fun purgeLegacyReplies(directory:File) {

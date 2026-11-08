@@ -48,6 +48,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val charcoal=Color(0xff151817)
 private val surfaceDark=Color(0xff202523)
@@ -129,6 +133,7 @@ class MainActivity:ComponentActivity() {
     else arrayOf(Manifest.permission.RECORD_AUDIO)).all {granted[it]==true})==ListenerPermissionFlow.Action.CONFIRM_AGAIN
  }
  val startListener={listenerConsent=true}
+ val musicPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { /* User must retry voice request after grant. */ }
  val certPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
   if(uri!=null) try {
    context.contentResolver.openInputStream(uri)?.use {stream-> val bytes=Bounded.read(stream,65536);require(bytes.isNotEmpty());ca=bytes;caStatus="Private CA selected (certificate only)" }
@@ -149,6 +154,9 @@ class MainActivity:ComponentActivity() {
     if(ui.hasConfig) OutlinedButton(onClick=vm::reconnect,modifier=Modifier.heightIn(min=48.dp)) {Text("Check connection")}
     Spacer(Modifier.height(12.dp))
     Text("Voice & listener",style=MaterialTheme.typography.titleMedium)
+    Text("Phone-local music uses only audio already in this phone's shared library. No radio or cloud catalog is connected.",style=MaterialTheme.typography.bodySmall)
+    if(!PhoneMedia.hasLibraryPermission(context)) OutlinedButton(onClick={musicPermission.launch(if(Build.VERSION.SDK_INT>=33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE)}) {Text("Allow phone music library")}
+    else Text("Phone music library access granted",style=MaterialTheme.typography.bodySmall)
     AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole)
     ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
     if(!ui.hasConfig) Column {
@@ -196,6 +204,25 @@ class MainActivity:ComponentActivity() {
 }
 @Composable private fun CompanionScreen(ui:SarahViewModel.Ui,listener:String,vm:SarahViewModel,onSettings:()->Unit,onListener:()->Unit,onStopListener:()->Unit,onMic:()->Unit,denied:Boolean,onPermissions:()->Unit) {
  var expanded by rememberSaveable {mutableStateOf(false)}
+ val context=LocalContext.current
+ val scope=rememberCoroutineScope()
+ var alertError by remember {mutableStateOf(false)}
+ var scheduleReadError by remember {mutableStateOf(false)}
+ val localTimers by produceState(initialValue=Pair(emptyList<ScheduleEntry>(),System.currentTimeMillis()),context) {
+  while(true) {
+   val loaded=withContext(Dispatchers.IO) {runCatching {localSchedule(context).list("timer")}}
+   scheduleReadError=loaded.isFailure
+   if(loaded.isSuccess) value=Pair(loaded.getOrThrow(),System.currentTimeMillis())
+   delay(1000)
+  }
+ }
+ val ringing by produceState(initialValue=emptyList<ScheduleEntry>(),context) {
+  while(true) {
+   value=withContext(Dispatchers.IO) {runCatching {localSchedule(context).list().filter {it.state=="ringing"}}.getOrDefault(emptyList())}
+   delay(1000)
+  }
+ }
+ val counting=localTimers.first.filter {it.state=="active" || it.state=="delivering"}
  val state=when(ui.phase) {
   "recording" -> if(ui.status.startsWith("Starting microphone")) "Starting microphone" else "Listening"
   "playing" -> "Speaking"
@@ -222,6 +249,35 @@ class MainActivity:ComponentActivity() {
    }
    TextButton(onClick=onSettings,modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp).semantics {contentDescription="Connection and settings"}) {Text("⚙",fontSize=24.sp)}
   }
+  if(scheduleReadError) Text("Local timers unavailable. Existing timer state not confirmed.",modifier=Modifier.fillMaxWidth().padding(horizontal=24.dp),style=MaterialTheme.typography.bodySmall)
+  if(counting.isNotEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=4.dp)) {
+   Text("Current timers",style=MaterialTheme.typography.labelLarge)
+   Column(Modifier.fillMaxWidth().heightIn(max=190.dp).verticalScroll(rememberScrollState())) {
+    counting.forEach {entry ->
+     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+      Column(Modifier.weight(1f)) {
+       Text(entry.title,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium)
+       Text(if(!entry.scheduled) "Scheduling pending · ${TimerCountdown.remaining(entry.dueMillis,localTimers.second)}"
+        else TimerCountdown.remaining(entry.dueMillis,localTimers.second),style=MaterialTheme.typography.labelMedium)
+      }
+      TextButton(onClick={scope.launch {
+       alertError=withContext(Dispatchers.IO) {runCatching {localSchedule(context).cancel(entry.id,kind="timer")}.getOrDefault(false).not()}
+      }},modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp)) {Text("Cancel")}
+     }
+    }
+   }
+  }
+  if(ringing.isNotEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=8.dp)) {
+   Text("Local alert ringing",style=MaterialTheme.typography.labelLarge)
+   ringing.forEach {entry ->
+    Button(onClick={scope.launch {
+     alertError=withContext(Dispatchers.IO) {runCatching {localSchedule(context).dismiss(entry.id)}.getOrDefault(false).not()}
+    }},modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {
+     Text("■ Stop ${entry.kind} · ${entry.title.take(40)}",maxLines=2,overflow=TextOverflow.Ellipsis)
+    }
+   }
+  }
+  if(alertError) Text("Local stop not confirmed. Check current timers or notification; do not repeat uncertain writes.",modifier=Modifier.fillMaxWidth().padding(horizontal=24.dp),style=MaterialTheme.typography.bodySmall)
   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal=24.dp,vertical=8.dp)) {
    val actionMaxHeight=maxHeight*.70f
    Column(Modifier.fillMaxSize(),horizontalAlignment=Alignment.CenterHorizontally) {

@@ -229,7 +229,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   stopOperations();authenticated=false;_ui.value=_ui.value.copy(canCapture=false);val g=generation.get()
   job=scope.launch {
    try {
-    val candidate=withContext(io) { bridgeFactory(origin,token,ca).also { val h=it.health();require(h.getInt("protocol")==1 && h.getBoolean("ready")) {"Bridge not ready"} } }
+    val candidate=withContext(io) { bridgeFactory(origin,token,ca).also { val h=it.health();require(h.getInt("protocol") in 1..2 && h.getBoolean("ready")) {"Bridge not ready"} } }
     if (!foreground || serviceBusy() || generation.get()!=g) return@launch
     val conversation=withContext(io) { candidate.create() }
     if (!foreground || serviceBusy() || generation.get()!=g) return@launch
@@ -252,7 +252,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   job=scope.launch {try {
    val h=withContext(io) {bridge!!.health()}
    if (foreground && !serviceBusy() && generation.get()==g) {
-    if(h.optInt("protocol")!=1 || !h.optBoolean("ready")) {healthState="notReady";_ui.value=_ui.value.copy(phase="disconnected",status="Bridge not ready",canCapture=false)}
+    if(h.optInt("protocol") !in 1..2 || !h.optBoolean("ready")) {healthState="notReady";_ui.value=_ui.value.copy(phase="disconnected",status="Bridge not ready",canCapture=false)}
     else {healthState="succeeded";authenticated=true;val unresolved=state.optString("phase")=="uncertain";show(if(unresolved) "uncertain" else "ready",if(unresolved) state.optString("status","Outcome uncertain. Check existing request; never resend.") else state.optString("status").takeIf {state.optString("requestPhase")=="terminal"} ?: "Connected")}
    } else if(healthGeneration==g) healthState="ignored"
   } catch (e:CancellationException) {if(healthGeneration==g) healthState="canceled";throw e}
@@ -321,6 +321,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    val row=try {withContext(io) {bridge!!.pollChunks(turn,state.optInt("audioNext",0))}} catch (e:Exception) {if(owner(g,c,r)) {recordFailure("poll",e);wakeCapture=false;abortWindow();show("uncertain","Polling interrupted: ${safeError(e)}. Check existing request.")};return}
    if (!owner(g,c,r)) return
    if(row.optString("id")!=turn || row.optString("conversation")!=c) {show("uncertain","Server identity mismatch; no further action");return}
+   if(!handlePhoneAction(row,c,r,turn)) return
    val chunks=row.optJSONObject("audio_chunks")
    if(chunks!=null && row.optString("state")=="speaking") {
     val next=state.optInt("audioNext",0);val count=chunks.optInt("count",-1)
@@ -350,6 +351,22 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   }
   if(owner(g,c,r)) {wakeCapture=false;abortWindow();show("uncertain","Polling limit reached. Check existing request later.")}
  }
+ private suspend fun handlePhoneAction(row:JSONObject,c:String,r:String,turn:String):Boolean {
+  val action=row.optJSONObject("phone_action") ?: return true
+  if(action.optString("conversation")!=c || action.optString("turn")!=turn) {show("uncertain","Phone action owner mismatch; nothing executed");return false}
+  if(action.optJSONObject("receipt")!=null) return true // terminal readback; never re-execute
+  if(row.optString("state") !in setOf("acting","speaking","done")) {show("uncertain","Phone action not executable in terminal state");return false}
+  val native=bridge as? Bridge ?: run {show("uncertain","Phone command bridge unavailable; nothing executed");return false}
+  val nonce=action.optString("nonce");val key="$turn:$nonce"
+  val receipt=try {
+   if(state.optString("phoneActionKey")==key) state.getJSONObject("phoneActionReceipt")
+   else withContext(io) {PhoneActionRouter.execute(getApplication(),action,c,turn)}.also {
+    state.put("phoneActionKey",key).put("phoneActionReceipt",it);save()
+   }
+  } catch (_:Exception) {show("uncertain","Local schedule outcome uncertain. Check existing request; never resend.");return false}
+  return try {withContext(io) {native.phoneReceipt(turn,c,nonce,receipt)};true}
+   catch (_:Exception) {show("uncertain","Phone schedule receipt could not be confirmed. Check existing request; never resend.");false}
+ }
  private suspend fun applyRow(row:JSONObject,g:Long,c:String,r:String) {
   val stage=row.optString("state");val detail=row.optString("detail").take(8000);val transcript=row.optString("transcript").take(8000)
   if(stage in setOf("done","error","cancelled")) {state.put("audioNext",0).put("chunkInFlight",false);save()}
@@ -359,8 +376,17 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
     responseTiming?.mark("done_observed_ms")
     responseTiming?.let {state.put("responseTimings",it.snapshot(row.optJSONObject("timings")));save()}
     if(state.optString("shownReply")!=r) { append("S.A.R.A.H",detail);state.put("shownReply",r);save() }
-    show(if(row.optBoolean("audio")) "reply_audio_pending" else "done","Reply ready${if (row.optBoolean("audio")) " · audio pending" else " · text only"}")
-    if(!row.optBoolean("audio")) rearmIfEligible()
+    val timer=row.optJSONObject("phone_action")
+    val timerReceipt=timer?.optJSONObject("receipt")
+    val directTimer=row.optJSONObject("timings")?.optString("route")=="direct_timer" &&
+     timer?.optString("conversation")==c && timer.optString("turn")==row.optString("id") &&
+     timer.optJSONObject("command")?.optString("action")=="create" &&
+     timer.optJSONObject("command")?.optString("kind")=="timer"
+    val timerScheduled=directTimer && timerReceipt?.optString("status")=="scheduled"
+    show(if(directTimer && !timerScheduled) "uncertain" else if(row.optBoolean("audio")) "reply_audio_pending" else "done",
+     if(timerScheduled) "Timer scheduled · Ready" else if(directTimer) "Timer outcome not confirmed. Check existing request; never resend."
+     else "Reply ready${if (row.optBoolean("audio")) " · audio pending" else " · text only"}")
+    if(!row.optBoolean("audio") && (!directTimer || timerScheduled)) rearmIfEligible()
     if(row.optBoolean("audio") && owner(g,c,r)) try {
      val bytes=withContext(io) {bridge!!.audio(row.getString("id"))}
      responseTiming?.mark("audio_downloaded_ms")
@@ -374,7 +400,19 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
     else show("confirming","Server requests confirmation; acceptance does not prove action success",envelope)
    }
    "error","cancelled" -> {show(stage,detail.ifBlank {stage});rearmIfEligible()}
-   "uncertain" -> {wakeCapture=false;abortWindow();show(stage,detail.ifBlank {stage})}
+   "uncertain" -> {
+    wakeCapture=false;abortWindow()
+    val action=row.optJSONObject("phone_action")
+    val command=action?.optJSONObject("command")
+    val receipt=action?.optJSONObject("receipt")
+    val timerAccepted=action?.optString("conversation")==c && action.optString("turn")==row.optString("id") &&
+     command?.optString("action")=="create" && command.optString("kind")=="timer" && receipt?.optString("status")=="scheduled"
+    val directTimerAccepted=timerAccepted && row.optJSONObject("timings")?.optString("route")=="direct_timer"
+    if(directTimerAccepted) {
+     show("done","Timer scheduled · Ready (server reply stopped; no other action dispatched)")
+     rearmIfEligible()
+    } else show(stage,if(timerAccepted) "Phone accepted timer (stored receipt). Server turn stopped or unresolved; other actions not verified. Stop ringing alert with in-app button or notification Dismiss. Do not replay." else detail.ifBlank {stage})
+   }
    "transcribing","thinking","acting","speaking" -> show("polling","Server: $stage${if(detail.isBlank()) "" else " · $detail"}")
    else -> show("uncertain","Unknown server state; no retry")
   }
@@ -412,7 +450,15 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
     wakeCapture=false;show("ready","$outcome Ready for a new question.");if(HeySarahListenerService.status.value=="Wake listening") runCatching {abortWindow()}
    } else {
     val safePhase=phase.takeIf {it in setOf("transcribing","thinking","acting","speaking","confirming","uncertain")} ?: "unknown"
-    show("uncertain","Status checked: $safePhase. Server not proven finished; no audio replay or ACK. Check later or stop server turn.")
+    val action=row.optJSONObject("phone_action");val cmd=action?.optJSONObject("command");val receipt=action?.optJSONObject("receipt")
+    val timerAccepted=action?.optString("conversation")==c && action.optString("turn")==turn &&
+     cmd?.optString("action")=="create" && cmd.optString("kind")=="timer" && receipt?.optString("status")=="scheduled"
+    val directTimerAccepted=timerAccepted && row.optJSONObject("timings")?.optString("route")=="direct_timer"
+    if(directTimerAccepted) {
+     state.put("audioNext",0).put("chunkInFlight",false).put("requestPhase","terminal")
+     show("ready","Timer scheduled · Ready (server reply stopped; no other action dispatched). No replay.")
+    } else show("uncertain",if(timerAccepted) "Phone accepted timer (stored receipt); server turn $safePhase. Other outcomes unverified. Use local Stop/Dismiss; no replay."
+     else "Status checked: $safePhase. Server not proven finished; no audio replay or ACK. Check later or stop server turn.")
    }
   } catch(e:Exception) {if(statusOwner(g,c,r)) {recordFailure("status",e);show("uncertain","Status check failed: ${safeError(e)}. Server outcome unknown; never resend.")}}
    finally {if(generation.get()==g) statusChecking=false}
