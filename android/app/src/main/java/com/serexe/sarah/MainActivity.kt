@@ -158,7 +158,7 @@ class MainActivity:ComponentActivity() {
     if(!PhoneMedia.hasLibraryPermission(context)) OutlinedButton(onClick={musicPermission.launch(if(Build.VERSION.SDK_INT>=33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE)}) {Text("Allow phone music library")}
     else Text("Phone music library access granted",style=MaterialTheme.typography.bodySmall)
     AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole)
-    ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
+    ListenerControls(listener,ui,ui.canCapture && AssistantWakePolicy.roleSatisfied(context),listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
     if(!ui.hasConfig) Column {
      Text("Enter HTTPS bridge origin and separate revocable Android device token. No provider or smart-home credentials.",color=fg)
      Spacer(Modifier.height(18.dp))
@@ -191,7 +191,7 @@ class MainActivity:ComponentActivity() {
     listenerConsent=false
     val required=if(Build.VERSION.SDK_INT>=33) arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS) else arrayOf(Manifest.permission.RECORD_AUDIO)
     when(ListenerPermissionFlow.confirmed(required.all {context.checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED})) {
-     ListenerPermissionFlow.Action.START -> {listenerPermissionReady=false;HeySarahListenerService.start(context,vm.ui.value.canCapture && roleHeld)}
+     ListenerPermissionFlow.Action.START -> {listenerPermissionReady=false;HeySarahListenerService.start(context,vm.ui.value.canCapture && AssistantWakePolicy.roleSatisfied(context))}
      ListenerPermissionFlow.Action.REQUEST_PERMISSION -> {listenerPermissionReady=false;listenerPermission.launch(required)}
      else -> Unit
     }

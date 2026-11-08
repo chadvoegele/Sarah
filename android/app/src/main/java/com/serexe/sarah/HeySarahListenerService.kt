@@ -54,7 +54,7 @@ class HeySarahListenerService:Service() {
   checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED &&
    NotificationAvailability.allowed(this) &&
 
-   (Build.VERSION.SDK_INT>=29 && roleManager(this)?.isRoleHeld(RoleManager.ROLE_ASSISTANT)==true) &&
+   AssistantWakePolicy.roleSatisfied(this) &&
    audio.mode==AudioManager.MODE_NORMAL && !audio.isMicrophoneMute && !audio.isMusicActive
  } catch (_:Exception) {false}
  override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {

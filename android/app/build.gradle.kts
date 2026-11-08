@@ -25,10 +25,23 @@ android {
   }
  }
  defaultConfig {
-  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 50; versionName = "0.1.50-timer-countdown-review"
-  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a") }
+  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35
+  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   buildConfigField("String", "RECOVERY_REQUEST_HASH", "\"${recoveryHash("requestHash")}\"")
   buildConfigField("String", "RECOVERY_CONVERSATION_HASH", "\"${recoveryHash("conversationHash")}\"")
+ }
+ // Both flavors share applicationId, code, storage, Keystore namespace and signing.
+ // Different version codes allow ordinary signed upgrades from v50/v52; never install both together.
+ flavorDimensions += "device"
+ productFlavors {
+  create("phone") {
+   dimension = "device"; versionCode = 53; versionName = "0.1.53-phone-review"
+   ndk { abiFilters += "arm64-v8a" }
+  }
+  create("lenovo") {
+   dimension = "device"; versionCode = 54; versionName = "0.1.54-lenovo-review"
+   ndk { abiFilters += "armeabi-v7a" }
+  }
  }
  buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("localReview") }; release { isMinifyEnabled = false } }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

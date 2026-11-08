@@ -1,6 +1,6 @@
 # S.A.R.A.H Android
 
-Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory carries cumulative **[Android golden v50](../SARAH_BASELINE.md)** reconstructed development source, evolved from the original sanitized snapshot. Public ARM64 APK is the unchanged owner-approved local-review/debug build, not production-signed. **Exact source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The repository's existing `app/` remains the separate Ubuntu Touch client.
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared source descends from **[Android golden v50](../SARAH_BASELINE.md)** reconstructed development source. Golden v50 tag and approved APK remain unchanged; **exact v50 source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The repository's existing `app/` remains the separate Ubuntu Touch client.
 
 ## Included source
 
@@ -8,7 +8,7 @@ Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This director
 - Android assistant-role entry points and an explicitly enabled foreground-microphone service for local “Hey Sarah” detection.
 - Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-The current source/APK version is `0.1.50-timer-countdown-review` (version code `50`), package `com.serexe.sarah`, ARM64 only. The source includes local schedules, phone media and timer countdown/Cancel/Stop UI; compatible backend routes are not part of this Android-only promotion. APK identity is verified, but its exact build source is not. Physical-phone installation, upgrade, voice cancellation/acoustics, battery use and wake reliability are not established by publication.
+Current shared source has two **debug/local-review** variants. Both retain `com.serexe.sarah`, minSdk 26, targetSdk 35, Keystore-backed pairing and the existing signer input; they are alternative upgrades, not side-by-side installations. Phone: `phoneDebug`, ARM64 (`arm64-v8a`), `0.1.53-phone-review` / versionCode 53 (above golden v50). Lenovo: `lenovoDebug`, ARMv7 (`armeabi-v7a`), `0.1.54-lenovo-review` / versionCode 54 (above installed Lenovo v52). Version 54 is numerically above phone version 53; installing phone 53 over Lenovo 54 is a downgrade, so do not switch variants without planning a new higher version. These are source review builds, not new golden releases. Earlier v50 includes local schedules, phone media and timer countdown/Cancel/Stop UI; compatible backend routes are not part of this Android source. Physical-device testing of these new variants remains pending.
 
 ## Privacy and setup
 
@@ -22,13 +22,20 @@ Assistant-role invocation alone does not start microphone capture. Persistent lo
 
 Use JDK 17 and Android SDK platform/build-tools 35. Configure `ANDROID_HOME` for your own SDK installation. Gradle wrapper and declared dependencies require network access on an uncached machine.
 
-From this directory, the ordinary source checks are:
+From this directory, build and run focused JVM checks separately:
 
 ```sh
-./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
+./gradlew --no-daemon :app:testPhoneDebugUnitTest --tests 'com.serexe.sarah.LegacyWakeEligibilityTest' :app:testLenovoDebugUnitTest --tests 'com.serexe.sarah.LegacyWakeEligibilityTest'
+./gradlew --no-daemon :app:assemblePhoneDebug :app:assembleLenovoDebug
+# Outputs: app/build/outputs/apk/phone/debug/app-phone-debug.apk
+#          app/build/outputs/apk/lenovo/debug/app-lenovo-debug.apk
 ```
 
-For v50, Kotlin compiled and focused new JVM cases passed. A broader three-class run had 65 tests and 2 older `SarahViewModelTest` expectation failures, disclosed in the baseline; no claim of a green full suite or lint. Prior exact-APK isolated VM synthetic timer/countdown proof is separate from this source checkout. No new build, install or live restart occurred during promotion.
+Keep these APKs separate. The selected ABI must have five native libraries in the final APK: `libandroidx.graphics.path.so`, `libonnxruntime.so`, `libsherpa-onnx-c-api.so`, `libsherpa-onnx-cxx-api.so` and `libsherpa-onnx-jni.so`. Check final APK contents, `aapt` metadata and `apksigner` before using any artifact. Do not use Gradle's aggregate `assembleDebug` as a substitute for explicit lane selection.
+
+API 27/28 lacks `ROLE_ASSISTANT`; only there, the Lenovo-derived compatibility rule allows the persistent foreground microphone after visible user consent. API 29+ still requires the assistant role. Existing microphone permission, unlocked/privacy/audio-focus gates, notification and explicit Stop remain. No automatic always-listening, pairing reset, token change or bridge mutation is introduced. Lenovo acoustic wake and screen-off reliability are **not** proven by source tests/builds; do not install or contact the powered-off Lenovo during its move.
+
+Historical v50 evidence remains scoped to the immutable golden tag. Its Kotlin compilation and focused JVM cases passed; a broader three-class run had 65 tests and two older `SarahViewModelTest` expectation failures. This new branch is neither v50 promotion nor exact reproduction of its APK.
 
 The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent from source control. Debug APK assembly/install requires your own separately authorized private signing setup. Published v50 uses the existing compatible signer; no new key was generated. Do not commit signing materials. Release signing is not configured here.
 
