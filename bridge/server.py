@@ -1,4 +1,4 @@
-"""Private TLS companion. Codex pool + local STT/TTS + opt-in exact HA."""
+"""Private TLS companion. Scoped ACP + local STT/TTS + opt-in exact HA."""
 import argparse
 import asyncio
 import hashlib
@@ -304,8 +304,8 @@ def main():
     p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
     p.add_argument('--hermes-source',type=Path,required=True)
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
-    p.add_argument('--backend',choices=('codex','acp'),default='codex',
-                   help='Manual backend selection; ACP requires reviewed dedicated Sarah profile')
+    p.add_argument('--backend',choices=('acp',),default='acp',
+                   help='ACP-only reasoning; requires reviewed dedicated Sarah profile')
     p.add_argument('--enable-research',action='store_true',help='Scoped Tavily/explicit Exa, Gmail GET/search and conversation-only drafts')
     args=p.parse_args();store=Store(args.db);store.recover()
     from .acp_runtime import create_runtime
@@ -317,7 +317,6 @@ def main():
     from .calendar import CalendarDispatcher
     from .tvtime import TVTimeDispatcher
     from .web_mail import ResearchDispatcher
-    if args.enable_research and args.backend!='acp': raise ValueError('research_requires_scoped_acp')
     research=ResearchDispatcher.from_env() if args.enable_research else None
     web.run_app(make_app(store,adapter,HADispatcher.from_env(),SiYuanDispatcher.from_env(),CalendarDispatcher.from_env(),TVTimeDispatcher.from_env(),research),host=args.bind,port=args.port,ssl_context=tls,access_log=None)
 

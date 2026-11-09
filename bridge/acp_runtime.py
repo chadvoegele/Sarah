@@ -36,7 +36,7 @@ class ACPRuntime(VoiceRuntime):
         except (OSError, ValueError):
             self.ready = False
         if self.ready:
-            self.reason = 'Scoped Hermes ACP active; shared Codex OAuth pool; cancelled or uncertain sessions require a fresh conversation. No automatic fallback or replay.'
+            self.reason = 'Scoped Hermes ACP active; saved global model at child creation; cancelled or uncertain sessions require a fresh conversation. No automatic fallback or replay.'
         self.store.db.execute('''CREATE TABLE IF NOT EXISTS acp_sessions(
             device TEXT NOT NULL, conversation TEXT NOT NULL,
             backend TEXT NOT NULL, session TEXT NOT NULL, state TEXT NOT NULL,
@@ -130,7 +130,7 @@ class ACPRuntime(VoiceRuntime):
         # cannot turn a partial import into a fresh session or a prompt replay.
         if session_db.get_session(session_id) is not None:
             raise ACPError('acp_migration_session_exists')
-        session_db.create_session(session_id=session_id, source='acp', model='gpt-6.1-sol',
+        session_db.create_session(session_id=session_id, source='acp', model='sarah-acp',
                                   model_config={'cwd': self.config.cwd})
         session_db.replace_messages(session_id, history)
         restored = session_db.get_messages_as_conversation(session_id)
@@ -142,7 +142,7 @@ class ACPRuntime(VoiceRuntime):
         return plan
 
     async def reply(self, *args, **kwargs):
-        # Never inherit VoiceRuntime's direct Codex route, even if mis-called.
+        # No direct reasoning route; reject calls outside bound ACP turns.
         raise ACPError(self.reason)
 
     def _direct_rows(self, device, conversation):
@@ -297,10 +297,8 @@ class ACPRuntime(VoiceRuntime):
 
 
 
-def create_runtime(store, source, backend='codex'):
-    # Manual selector only. Never automatic backend fallback or prompt replay.
-    if backend == 'codex':
-        return VoiceRuntime(source)
-    if backend == 'acp':
-        return ACPRuntime(store, source)
-    raise ValueError('unsupported_voice_backend')
+def create_runtime(store, source, backend='acp'):
+    # Compatibility with existing ACP-only service flag; no alternate reasoning transport.
+    if backend != 'acp':
+        raise ValueError('unsupported_voice_backend')
+    return ACPRuntime(store, source)

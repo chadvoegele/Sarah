@@ -33,7 +33,7 @@ def validate_audio(data):
 class BlockedHermes:
     """Intentional closed seam. Not a simulated working Hermes integration.
 
-    Existing /v1/runs cannot prove Codex-only fallback suppression and a
+    Existing /v1/runs cannot prove reasoning fallback suppression and a
     companion-specific dispatch policy. There is NO enable/unsafe override.
     """
     ready=False
