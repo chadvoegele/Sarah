@@ -471,7 +471,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   val wire=bridge
   if(!foreground || wire==null || _ui.value.phase!="uncertain" || !localRecoveryTarget.matches(state)) {blocked("saved request does not match exact approval");return}
   if(OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || HeySarahListenerService.status.value!="off" ||
-   capture!=null || captureJob!=null || chunkCompletion!=null || wakeCapture || job?.isActive==true) {blocked("stop Hey Sarah and wait for command/audio cleanup");return}
+   capture!=null || captureJob!=null || chunkCompletion!=null || wakeCapture || job?.isActive==true) {blocked("stop ${WakePhrase.display} and wait for command/audio cleanup");return}
   val audioReservation=Any()
   if(!AudioArbiter.acquire(audioReservation)) {blocked("audio still active");return}
   val before=state.toString();val c=state.getString("conversation");val r=state.getString("request")

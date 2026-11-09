@@ -11,6 +11,9 @@ import android.media.*
 import android.os.*
 import kotlinx.coroutines.flow.MutableStateFlow
 
+// Drain available PCM promptly; idle reads still back off to avoid a busy loop.
+internal fun wakeReadDelayMs(samplesRead:Int):Long=if(samplesRead==0) 20L else 0L
+
 /** Explicit foreground consent starts a persistent local-only microphone FGS.
  * Locked/offscreen hits notify; only visible unlocked hits hand off after microphone release.
  */
@@ -64,12 +67,12 @@ class HeySarahListenerService:Service() {
   session=current ?: run {stopSelf();return START_NOT_STICKY}
   window=ListenerWindow(optedStart,persistent=true)
   val nm=getSystemService(NotificationManager::class.java)
-  nm.createNotificationChannel(NotificationChannel(CHANNEL,"Hey Sarah microphone",NotificationManager.IMPORTANCE_LOW))
+  nm.createNotificationChannel(NotificationChannel(CHANNEL,"${WakePhrase.display} microphone",NotificationManager.IMPORTANCE_LOW))
   if(!session.gate.listening(true) || !safe()) {session.stopListening();complete();return START_NOT_STICKY}
   val stop=PendingIntent.getService(this,1,Intent(this,HeySarahListenerService::class.java).setAction(STOP),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
   val open=PendingIntent.getActivity(this,2,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
   val n=Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now)
-   .setContentTitle("Hey Sarah · microphone active").setContentText("Persistent listening · Stop anytime")
+   .setContentTitle("${WakePhrase.display} · microphone starting").setContentText("Starting · Stop anytime")
    .setVisibility(Notification.VISIBILITY_PUBLIC).setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null,"Stop",stop).build()).build()
   foregroundNotification=n
   try {
@@ -77,7 +80,6 @@ class HeySarahListenerService:Service() {
    // Explicit opt-in retains CPU for local detection until Stop or fail-closed teardown.
    // Do not restart a microphone FGS from background if the OS destroys this owner.
    wakeLock=getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"sarah:local-keyword").also {it.acquire()}
-   stage("listening")
    listenerCleanup.begin()
    worker=Thread({listen()},"sarah-local-keyword").also {it.start()}
   } catch (_:Exception) {session.stopListening();complete()}
@@ -85,9 +87,12 @@ class HeySarahListenerService:Service() {
  }
  @SuppressLint("MissingPermission")
  private fun listen() {
+  val diagnostic=WakeCaptureDiagnostics()
   var recorder:AudioRecord?=null
   var engine:HeySarahKeywordEngine?=null
   var focus:AudioFocusRequest?=null
+  var failure:Exception?=null
+  var modelArmed=false
   var startAttempted=false
   var routesAttempted=false
   var recordingCallbackAttempted=false
@@ -103,6 +108,7 @@ class HeySarahListenerService:Service() {
   }
   try {
    check(safe())
+   diagnostic.phase("audio-focus")
    routesAttempted=true
    audio.registerAudioDeviceCallback(routes,main)
    val request=AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
@@ -112,23 +118,45 @@ class HeySarahListenerService:Service() {
    check(audio.requestAudioFocus(request)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
    val min=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
    check(min>0)
+   diagnostic.phase("recorder-create")
    val r=listenerCleanup.construct {AudioRecord(MediaRecorder.AudioSource.MIC,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,maxOf(min,4096))}
    recorder=r;check(r.state==AudioRecord.STATE_INITIALIZED)
    recordingCallbackAttempted=true
    audio.registerAudioRecordingCallback(silenced,main)
+   diagnostic.phase("model-create")
    val e=listenerCleanup.construct {HeySarahKeywordEngine(assets)};engine=e
    e.arm() // JNI stream recreation outside stop/native-start ownership lock.
+   modelArmed=true
+   diagnostic.phase("record-start")
    check(session.nativeStart.start({gate.listening(safe()) && window?.valid(SystemClock.elapsedRealtime())==true}) {startAttempted=true;r.startRecording()})
+   check(r.recordingState==AudioRecord.RECORDSTATE_RECORDING)
+   diagnostic.recordingStarted()
+   val owner=session
+   check(owner.gate.publishReady(modelArmed,r.recordingState==AudioRecord.RECORDSTATE_RECORDING,{
+    current===owner && session===owner && !closed && !teardown.stopped && !teardown.destroyed &&
+     !listenerCleanup.complete && window?.valid(SystemClock.elapsedRealtime())==true && safe() &&
+     NotificationAvailability.allowed(this)
+   }, {stage("listening")}))
    val chunk=ShortArray(320)
 
+   diagnostic.phase("read")
    while(gate.listening(safe()) && window?.valid(SystemClock.elapsedRealtime())==true) {
     val n=r.read(chunk,0,chunk.size,AudioRecord.READ_NON_BLOCKING)
     check(n>=0)
-    if(n>0 && gate.listening(safe()) && e.acceptPcm16(chunk,n)) {if(gate.hit()) stage("hit");break}
-    Thread.sleep(20)
+    if(n>0 && gate.listening(safe())) {
+     diagnostic.samples(chunk,n)
+     diagnostic.phase("model-feed")
+     val hit=e.acceptPcm16(chunk,n)
+     diagnostic.fedModel()
+     if(hit) {diagnostic.hit();if(gate.hit()) stage("hit");break}
+     diagnostic.phase("read")
+    }
+    val delay=wakeReadDelayMs(n)
+    if(delay>0) Thread.sleep(delay)
    }
-  } catch (_:Exception) {session.stopListening()}
+  } catch (e:Exception) {failure=e;session.stopListening()}
   finally {
+   diagnostic.finish(failure)
    val released=listenerCleanup.finish(
     if(startAttempted) ({recorder!!.stop()}) else null,
     recorder?.let {r -> {r.release()}},
@@ -136,6 +164,8 @@ class HeySarahListenerService:Service() {
     if(recordingCallbackAttempted) ({audio.unregisterAudioRecordingCallback(silenced)}) else null,
     if(routesAttempted) ({audio.unregisterAudioDeviceCallback(routes)}) else null,
     focus?.let {request -> {check(audio.abandonAudioFocusRequest(request)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED)}})
+   // Never put diagnostic I/O ahead of recorder/native cleanup.
+   runCatching {diagnostic.persist(this)}
    if(!released) session.stopListening()
    main.post {
     // Recorder/native release precedes command callback; late Stop/background invalidates wake.
@@ -200,7 +230,7 @@ class HeySarahListenerService:Service() {
   command=null;session=next;current=next
   listenerCleanup.begin()
   worker=thread
-  return try {stage("listening");thread.start();true} catch (_:Exception) {
+  return try {stage("starting");thread.start();true} catch (_:Exception) {
    next.stopListening()
    // Only a never-started thread proves no recorder/JNI acquisition. Otherwise
    // keep ownership until the real worker's finally acknowledges native release.
@@ -213,16 +243,21 @@ class HeySarahListenerService:Service() {
  }
  private fun stage(label:String) {
   if(closed || teardown.destroyed || current!==session) return
-  if(label!="stopped" && !NotificationAvailability.allowed(this)) {stop(this);return}
+  if(label!="stopped" && !NotificationAvailability.allowed(this)) {
+   if(label=="listening") main.post {stop(this)} else stop(this)
+   return
+  }
   StageTrail.write(this,label)
   status.value=if(label=="listening") "Wake listening" else label
   // Notification contains stage category, never command text, transcript, or token.
   if(foregroundNotification!=null && status.value!="off") {
    val stop=PendingIntent.getService(this,1,Intent(this,HeySarahListenerService::class.java).setAction(STOP),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
    try {getSystemService(NotificationManager::class.java).notify(71,Notification.Builder(this,CHANNEL)
-    .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Hey Sarah · microphone active")
+    .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("${WakePhrase.display} · microphone active")
     .setContentText(if(label=="listening") "Persistent listening · Stop anytime" else "Stage: $label · Stop anytime").setVisibility(Notification.VISIBILITY_PUBLIC)
-    .setOngoing(true).addAction(Notification.Action.Builder(null,"Stop",stop).build()).build())} catch (_:Exception) {stop(this)}
+    .setOngoing(true).addAction(Notification.Action.Builder(null,"Stop",stop).build()).build())} catch (_:Exception) {
+    if(label=="listening") main.post {stop(this)} else stop(this)
+   }
   }
  }
  private fun finishService() {
@@ -241,7 +276,7 @@ class HeySarahListenerService:Service() {
   // No background activity launch or command submission.
   val open=PendingIntent.getActivity(this,3,Intent(this,MainActivity::class.java).setAction(Intent.ACTION_ASSIST),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
   getSystemService(NotificationManager::class.java).notify(72,Notification.Builder(this,CHANNEL)
-   .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Hey Sarah heard")
+   .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("${WakePhrase.display} heard")
    .setContentText("Unlock and open Sarah, then tap to talk. No locked-screen auto-recording.")
    .setVisibility(Notification.VISIBILITY_PUBLIC).setContentIntent(open).setAutoCancel(true)
    .setTimeoutAfter(120000).addAction(Notification.Action.Builder(null,"Open Sarah",open).build()).build())

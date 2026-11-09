@@ -187,7 +187,7 @@ class MainActivity:ComponentActivity() {
     {mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,
     {context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}")))})
 
-   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local Hey Sarah?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
+   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local ${WakePhrase.display}?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
     listenerConsent=false
     val required=if(Build.VERSION.SDK_INT>=33) arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS) else arrayOf(Manifest.permission.RECORD_AUDIO)
     when(ListenerPermissionFlow.confirmed(required.all {context.checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED})) {
@@ -301,7 +301,7 @@ class MainActivity:ComponentActivity() {
     }
     HorizontalDivider(color=Color(0xff393143))
     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-     TextButton(onClick=if(listener=="off") onListener else onSettings,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("“Hey Sarah”",modifier=Modifier.weight(1f),textAlign=TextAlign.Start);Text(if(listener=="off") "Off  ›" else "$listener  ›")}
+     TextButton(onClick=if(listener=="off") onListener else onSettings,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("“${WakePhrase.display}”",modifier=Modifier.weight(1f),textAlign=TextAlign.Start);Text(if(listener=="off") "Off  ›" else "$listener  ›")}
      if(listener!="off") TextButton(onClick=onStopListener,modifier=Modifier.heightIn(min=48.dp)) {Text("Stop microphone")}
     }
    }
@@ -328,11 +328,11 @@ class MainActivity:ComponentActivity() {
 }
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
  Column {
-  Text("Hey Sarah: $state · microphone stays on until Stop. Locked wake notifies only. Black-screen behavior unverified.",style=MaterialTheme.typography.bodySmall)
+  Text("${WakePhrase.display}: $state · microphone stays on until Stop. Locked wake notifies only. Black-screen behavior unverified.",style=MaterialTheme.typography.bodySmall)
   if(state=="off") {
-   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent Hey Sarah")}
-   if(permissionReady) Text("Microphone permission granted. Tap Enable Hey Sarah again to start listening.",style=MaterialTheme.typography.bodySmall)
-  } else OutlinedButton(onClick=onStop) {Text("Stop Hey Sarah microphone")}
+   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent ${WakePhrase.display}")}
+   if(permissionReady) Text("Microphone permission granted. Tap Enable ${WakePhrase.display} again to start listening.",style=MaterialTheme.typography.bodySmall)
+  } else OutlinedButton(onClick=onStop) {Text("Stop ${WakePhrase.display} microphone")}
   if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop) {Text("Stop hands-free listening (current server work continues)")}
  }
 }
@@ -394,7 +394,7 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
  if(recoveryConfirm && ui.phase=="uncertain") AlertDialog(
   onDismissRequest={recoveryConfirm=false},
   title={Text("Clear only approved local tracking?")},
-  text={Text("Only the exact approved missing request can pass. Stop Hey Sarah first. A fresh authenticated status check must return not_found, with no admitted turn or active audio. Keeps history, conversation, pairing, permissions, action records and audio ACKs. Never resends the old request. Any mismatch or network/auth failure keeps tracking blocked.")},
+  text={Text("Only the exact approved missing request can pass. Stop ${WakePhrase.display} first. A fresh authenticated status check must return not_found, with no admitted turn or active audio. Keeps history, conversation, pairing, permissions, action records and audio ACKs. Never resends the old request. Any mismatch or network/auth failure keeps tracking blocked.")},
   confirmButton={TextButton(onClick={recoveryConfirm=false;vm.recoverApprovedLocalRequest()}) {Text("Check & clear approved tracking")}},
   dismissButton={TextButton(onClick={recoveryConfirm=false}) {Text("Keep tracking")}}
  )
@@ -424,7 +424,7 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
   } else if(ui.hasConfig && ui.canCapture && ui.phase in setOf("ready","done","error","cancelled")) {
    val listening by HeySarahListenerService.status.collectAsStateWithLifecycle()
    Button(onClick=onMic,enabled=listening=="off",modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("● Tap to talk",style=MaterialTheme.typography.titleMedium)}
-   if(listening!="off") Text("Stop Hey Sarah before manual command capture.")
+   if(listening!="off") Text("Stop ${WakePhrase.display} before manual command capture.")
    if(denied) {Text("Microphone denied. Enable permission in Android settings.");TextButton(onClick=onSettings) {Text("Open app settings")}}
   } else {
    Text("Authenticated connection required before recording",style=MaterialTheme.typography.bodySmall)

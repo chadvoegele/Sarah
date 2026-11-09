@@ -36,10 +36,16 @@ android {
  productFlavors {
   create("phone") {
    dimension = "device"; versionCode = 53; versionName = "0.1.53-phone-review"
+   buildConfigField("String", "WAKE_PHRASE", "\"Hey Sarah\"")
+   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"HEY_SARAH\"")
+   buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.25f")
    ndk { abiFilters += "arm64-v8a" }
   }
   create("lenovo") {
-   dimension = "device"; versionCode = 54; versionName = "0.1.54-lenovo-review"
+   dimension = "device"; versionCode = 60; versionName = "0.1.60-lenovo-sarah-ready-review"
+   buildConfigField("String", "WAKE_PHRASE", "\"Sarah\"")
+   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"SARAH\"")
+   buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.24f")
    ndk { abiFilters += "armeabi-v7a" }
   }
  }
