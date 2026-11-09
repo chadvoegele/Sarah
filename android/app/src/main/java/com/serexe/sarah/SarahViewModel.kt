@@ -27,7 +27,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private val awaitPollSlot:suspend ()->Unit={ResultPolling.awaitSlot()},
  private val localRecoveryTarget:ExactLocalRecoveryTarget=ExactLocalRecoveryTarget.installed()):AndroidViewModel(app) {
  constructor(app:Application):this(app,Vault(app),{url,token,ca->Bridge(url,token,ca)},{interrupted->Capture(app,interrupted,true)},{done->Playback(app,done)},CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate),Dispatchers.IO,{wake->AudioEligibility.allowed(app,wake)},{HeySarahListenerService.awaitIdle()},{HeySarahListenerService.start(app,true,true)},{HeySarahListenerService.stop(app)})
- data class Ui(val phase:String="disconnected",val status:String="Set up HTTPS bridge",val conversation:String?=null,val transcript:List<Pair<String,String>> = emptyList(),val hasConfig:Boolean=false,val confirmation:JSONObject?=null,val canCapture:Boolean=false)
+ data class Ui(val phase:String="disconnected",val status:String="Set up HTTPS bridge",val conversation:String?=null,val transcript:List<Pair<String,String>> = emptyList(),val hasConfig:Boolean=false,val confirmation:JSONObject?=null,val canCapture:Boolean=false,val responseText:String?=null)
  private val generation=AtomicLong()
  private val _ui=MutableStateFlow(Ui());val ui=_ui.asStateFlow()
  private var state=JSONObject()
@@ -67,6 +67,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private var healthGeneration:Long?=null
  private var lastHealthFailure="none"
  internal fun playbackAmplitude():Float=(playback as? Playback)?.amplitude() ?: 0f
+ internal fun playbackPositionMs():Int=(playback as? Playback)?.positionMs() ?: 0
+ private var currentResponse:String?=null
  internal fun clearPlaybackMeter() {(playback as? Playback)?.clearMeter()}
  /** Local one-shot metadata: allowlisted codes and masked IDs only; never raw state/body. */
  internal fun diagnosticSnapshot(versionCode:Long):String {
@@ -139,12 +141,13 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  }
  private fun restore() {
   val p=state.optString("phase","ready")
-  _ui.value=Ui(p,state.optString("status").takeIf {it.isNotBlank()} ?: if(p=="uncertain") "Outcome uncertain. Check existing request; never resend." else p.replaceFirstChar {it.uppercase()},state.optString("conversation").takeIf {it.isNotEmpty()},messages(),true,canCapture=authenticated && p in setOf("ready","done","error","cancelled"))
+  currentResponse=messages().lastOrNull()?.takeIf {it.first=="S.A.R.A.H"}?.second
+  _ui.value=Ui(p,state.optString("status").takeIf {it.isNotBlank()} ?: if(p=="uncertain") "Outcome uncertain. Check existing request; never resend." else p.replaceFirstChar {it.uppercase()},state.optString("conversation").takeIf {it.isNotEmpty()},messages(),true,canCapture=authenticated && p in setOf("ready","done","error","cancelled"),responseText=currentResponse)
  }
  private fun show(phase:String,status:String,confirmation:JSONObject?=null) {
   if(phase=="uncertain" && visibleHandoff!=null) {wakeCapture=false;runCatching {abortWindow()}}
   state.put("phase",phase).put("status",status);save()
-  _ui.value=Ui(phase,status,state.optString("conversation").takeIf {it.isNotEmpty()},messages(),bridge!=null,confirmation,authenticated && phase in setOf("ready","done","error","cancelled"))
+  _ui.value=Ui(phase,status,state.optString("conversation").takeIf {it.isNotEmpty()},messages(),bridge!=null,confirmation,authenticated && phase in setOf("ready","done","error","cancelled"),currentResponse)
  }
  private fun append(who:String,text:String) {
   val rows=state.optJSONArray("messages") ?: JSONArray()
@@ -271,7 +274,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    !authenticated || !_ui.value.canCapture && handoff?.owned()!=true || bridge==null ||
    _ui.value.phase !in listOf("ready","done","error","cancelled") || state.optString("conversation").isEmpty()) return
   if(!commandEligible(fromWake)) return
-  stopOperations();wakeCapture=fromWake;visibleHandoff=handoff;handoff?.onStop={stopVisibleCommand()};val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
+  stopOperations();currentResponse=null;wakeCapture=fromWake;visibleHandoff=handoff;handoff?.onStop={stopVisibleCommand()};val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
   if(c is Capture) {
    c.eligibility={commandEligible(fromWake) && (handoff?.owned() ?: true)}
    c.onMicReady={cue->scope.launch {
@@ -331,6 +334,12 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    if (!owner(g,c,r)) return
    if(row.optString("id")!=turn || row.optString("conversation")!=c) {show("uncertain","Server identity mismatch; no further action");return}
    if(!handlePhoneAction(row,c,r,turn)) return
+   // Server publishes its actual answer in speaking.detail before sentence audio.
+   // User transcript and generic progress labels are never answer captions.
+   if(row.optString("state")=="speaking" && row.optJSONObject("audio_chunks")!=null &&
+      row.optString("detail")!="Preparing spoken reply") {
+    currentResponse=row.optString("detail").take(8000).takeIf {it.isNotBlank()}
+   }
    val chunks=row.optJSONObject("audio_chunks")
    if(chunks!=null && row.optString("state")=="speaking") {
     val next=state.optInt("audioNext",0);val count=chunks.optInt("count",-1)
@@ -382,6 +391,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   if(transcript.isNotBlank() && state.optString("shownTranscript")!=r) {append("YOU",transcript);state.put("shownTranscript",r);save()}
   when(stage) {
    "done" -> {
+    currentResponse=detail.takeIf {it.isNotBlank()}
     responseTiming?.mark("done_observed_ms")
     responseTiming?.let {state.put("responseTimings",it.snapshot(row.optJSONObject("timings")));save()}
     if(state.optString("shownReply")!=r) { append("S.A.R.A.H",detail);state.put("shownReply",r);save() }
@@ -541,13 +551,13 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    val c=withContext(io) {bridge!!.create()}
    if(!foreground || serviceBusy() || generation.get()!=g) return@launch
    state.remove("request");state.remove("turn");state.remove("fingerprint");state.remove("shownTranscript");state.remove("shownReply")
-   state.put("conversation",c).put("messages",JSONArray());authenticated=false;show("disconnected","New conversation created. Check connection before recording");reconnect()
+   state.put("conversation",c).put("messages",JSONArray());currentResponse=null;authenticated=false;show("disconnected","New conversation created. Check connection before recording");reconnect()
   } catch (_:Exception) {if(foreground && generation.get()==g) show("uncertain","New conversation outcome unknown. No automatic retry; old conversation retained.")}}
  }
- fun clearLocal() {if(manualBusy()) return;state.put("messages",JSONArray());save();_ui.value=_ui.value.copy(transcript=emptyList(),status=if(_ui.value.phase=="uncertain") _ui.value.status else "Local transcript cleared. Server history remains.")}
+ fun clearLocal() {if(manualBusy()) return;state.put("messages",JSONArray());save();currentResponse=null;_ui.value=_ui.value.copy(transcript=emptyList(),responseText=null,status=if(_ui.value.phase=="uncertain") _ui.value.status else "Local transcript cleared. Server history remains.")}
  fun resetPairing() {
   if(!foreground || manualBusy()) return
-  stopOperations();authenticated=false;try {vault.reset();state=JSONObject();bridge=null;_ui.value=Ui(status="Local pairing cleared. Server conversations remain; request new device token from bridge administrator.")}
+  stopOperations();authenticated=false;try {vault.reset();state=JSONObject();bridge=null;currentResponse=null;_ui.value=Ui(status="Local pairing cleared. Server conversations remain; request new device token from bridge administrator.")}
   catch (_:Exception) {_ui.value=_ui.value.copy(phase="error",status="Secure storage reset failed; no plaintext recovery")}
  }
  fun routeInterrupted() {

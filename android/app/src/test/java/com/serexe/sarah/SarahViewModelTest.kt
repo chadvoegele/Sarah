@@ -182,6 +182,23 @@ class SarahViewModelTest {
   f.sound.finish();delay(30);assertEquals("done",f.vm.ui.value.phase)
   assertEquals(2,f.sound.played);f.vm.onBackground()
  }
+ @Test fun a2CaptionUsesActualAssistantDetailBeforeChunkPlaybackNotUserOrProgress()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.row.put("state","speaking").put("detail","Actual fixture answer.")
+   .put("transcript","User fixture request.").put("audio_chunks",JSONObject().put("count",1))
+  f.vm.onForeground();f.vm.startCapture();assertNull(f.vm.ui.value.responseText)
+  f.mic.end.complete(Unit);delay(30)
+  assertEquals("playing",f.vm.ui.value.phase)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  assertFalse(f.vm.ui.value.responseText!!.contains("User fixture"))
+  f.wire.row.put("state","done").remove("audio_chunks")
+  f.sound.finish();delay(30)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  f.vm.clearLocal()
+  assertNull(f.vm.ui.value.responseText)
+  assertTrue(f.vm.ui.value.transcript.isEmpty())
+  f.vm.onBackground()
+ }
  @Test fun stopDuringFirstChunkCancelsServerAndNeverPlaysQueuedChunk()=runBlocking {
   val f=fixture();f.mic.endpointReached=true
   f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2))
