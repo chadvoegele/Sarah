@@ -101,6 +101,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   else -> "formatOrConnection"
  }
  private fun serviceBusy()=(visibleHandoff?.let {!it.owned()} ?: (HeySarahListenerService.status.value!="off")) || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch()
+ private fun manualBusy()=visibleHandoff!=null || serviceBusy()
  private val playback=playbackFactory { clean->val completion=chunkCompletion;if(completion!=null) completion.complete(clean) else {val g=generation.get();val c=state.optString("conversation");val r=state.optString("request");scope.launch { if (owner(g,c,r) && _ui.value.phase=="playing") {show("done",if(clean) "Reply ready" else "Playback interrupted");if(clean) rearmIfEligible() else {wakeCapture=false;runCatching {abortWindow()}}} } } }
  init {
   try {
@@ -192,7 +193,12 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  }
  /** Called only by the service on the main thread, after native engine and AudioRecord release. */
  internal fun acceptWake(handoff:VisibleCommandHandoff?=HeySarahListenerService.visibleHandoff()):Boolean {
-  if(!foreground || !authenticated || !_ui.value.canCapture || _ui.value.phase !in setOf("ready","done","error","cancelled") || !commandEligible(true) || !AudioArbiter.idle()) return false
+  // A resumed Activity disables manual capture while the FGS owns listening. Only
+  // the exact pre-callback service capability may start this visible command.
+  val serviceActive=HeySarahListenerService.status.value!="off"
+  if(!foreground || !authenticated || leaseEpoch!=OffscreenOwnership.epoch() || serviceActive && handoff?.owned()!=true ||
+   !_ui.value.canCapture && handoff?.owned()!=true || _ui.value.phase !in setOf("ready","done","error","cancelled") ||
+   !commandEligible(true) || !AudioArbiter.idle()) return false
   startCapture(true,handoff)
   return _ui.value.phase=="recording" && wakeCapture
  }
@@ -223,7 +229,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   else if (_ui.value.phase in listOf("uploading","polling","creating","cancelling","confirming")) show("uncertain","Connection interrupted. Check existing request; no retry.")
  }
  fun configure(url:String,token:String,ca:ByteArray?=null) {
-  if (!foreground || serviceBusy()) return
+  if (!foreground || manualBusy()) return
   val origin=try { Origin.parse(url) } catch (_:Exception) { _ui.value=_ui.value.copy(status="Enter an HTTPS origin (no path or credentials)",phase="error");return }
   if (token.length !in 40..256 || token.any { it.code == 10 || it.code == 13 }) { _ui.value=_ui.value.copy(status="Enter separate revocable device token",phase="error");return }
   stopOperations();authenticated=false;_ui.value=_ui.value.copy(canCapture=false);val g=generation.get()
@@ -240,8 +246,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   }
  }
  fun reconnect() {
-  if (!foreground || serviceBusy() || bridge==null) {
-   healthState=when { !foreground->"skippedBackground";serviceBusy()->"skippedBusy";else->"skippedNoBridge" }
+  if (!foreground || manualBusy() || bridge==null) {
+   healthState=when { !foreground->"skippedBackground";manualBusy()->"skippedBusy";else->"skippedNoBridge" }
    return
   }
   if(_ui.value.phase in setOf("recording","finalizing")) {stopOperations();show("disconnected","Recording discarded for connection check")}
@@ -260,7 +266,10 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  }
  fun startCapture(fromWake:Boolean=false) = startCapture(fromWake,null)
  private fun startCapture(fromWake:Boolean,handoff:VisibleCommandHandoff?) {
-  if(!foreground || serviceBusy() && !fromWake || OffscreenOwnership.held() || !authenticated || !_ui.value.canCapture || bridge==null || _ui.value.phase !in listOf("ready","done","error","cancelled") || state.optString("conversation").isEmpty()) return
+  if(!foreground || serviceBusy() && !fromWake || handoff!=null && !handoff.owned() ||
+   HeySarahListenerService.status.value!="off" && handoff==null || OffscreenOwnership.held() ||
+   !authenticated || !_ui.value.canCapture && handoff?.owned()!=true || bridge==null ||
+   _ui.value.phase !in listOf("ready","done","error","cancelled") || state.optString("conversation").isEmpty()) return
   if(!commandEligible(fromWake)) return
   stopOperations();wakeCapture=fromWake;visibleHandoff=handoff;handoff?.onStop={stopVisibleCommand()};val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
   if(c is Capture) {
@@ -293,9 +302,9 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   c.stop()
   job=scope.launch {
    try {recordingJob?.join()} catch (_:CancellationException) {c.discard();return@launch}
-   if(!foreground || serviceBusy() && (!wakeCapture || visibleHandoff!=null) || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || generation.get()!=g || capture!==c) {c.discard();return@launch}
+   if(!foreground || serviceBusy() || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || generation.get()!=g || capture!==c) {c.discard();return@launch}
    captureJob=null;capture=null
-   val wav=try { c.finish() } catch (_:Exception) {c.discard();show("error","Recording interrupted or too short; nothing sent");return@launch}
+   val wav=try { c.finish() } catch (_:Exception) {c.discard();show("error","Recording interrupted or too short; nothing sent");if(wakeCapture) abortWindow();return@launch}
    if(OffscreenOwnership.held() || !commandEligible(wakeCapture)) {c.discard();if(!OffscreenOwnership.held()) show("ready","Recording eligibility lost; nothing sent");return@launch}
    val conversation=state.getString("conversation");val request=Identity.new()
    // durable identity and ambiguous status before any upload bytes leave process
@@ -391,7 +400,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
      val bytes=withContext(io) {bridge!!.audio(row.getString("id"))}
      responseTiming?.mark("audio_downloaded_ms")
      if(owner(g,c,r)) {beforePlayback();if(owner(g,c,r)) {playback.play(bytes);responseTiming?.mark("playback_prepared_ms");responseTiming?.let {state.put("responseTimings",it.snapshot(row.optJSONObject("timings")));save()};show("playing","Speaking · stop audio does not cancel work")}}
-    } catch (_:Exception) {wakeCapture=false;if(owner(g,c,r)) show("done","Reply text ready. Audio unavailable")}
+    } catch (_:Exception) {if(owner(g,c,r)) {show("done","Reply text ready. Audio unavailable");if(wakeCapture) abortWindow()}}
    }
    "confirming" -> {
     wakeCapture=false;abortWindow()
@@ -526,7 +535,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  }
  fun stopAudio() {if(serviceBusy()) return;cancelTurn()}
  fun newConversation() {
-  if(!foreground || serviceBusy() || bridge==null) return
+  if(!foreground || manualBusy() || bridge==null) return
   stopOperations();val g=generation.get();show("creating","Creating separate server conversation; pending work is not undone")
   job=scope.launch {try {
    val c=withContext(io) {bridge!!.create()}
@@ -535,9 +544,9 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    state.put("conversation",c).put("messages",JSONArray());authenticated=false;show("disconnected","New conversation created. Check connection before recording");reconnect()
   } catch (_:Exception) {if(foreground && generation.get()==g) show("uncertain","New conversation outcome unknown. No automatic retry; old conversation retained.")}}
  }
- fun clearLocal() {if(serviceBusy()) return;state.put("messages",JSONArray());save();_ui.value=_ui.value.copy(transcript=emptyList(),status=if(_ui.value.phase=="uncertain") _ui.value.status else "Local transcript cleared. Server history remains.")}
+ fun clearLocal() {if(manualBusy()) return;state.put("messages",JSONArray());save();_ui.value=_ui.value.copy(transcript=emptyList(),status=if(_ui.value.phase=="uncertain") _ui.value.status else "Local transcript cleared. Server history remains.")}
  fun resetPairing() {
-  if(!foreground || serviceBusy()) return
+  if(!foreground || manualBusy()) return
   stopOperations();authenticated=false;try {vault.reset();state=JSONObject();bridge=null;_ui.value=Ui(status="Local pairing cleared. Server conversations remain; request new device token from bridge administrator.")}
   catch (_:Exception) {_ui.value=_ui.value.copy(phase="error",status="Secure storage reset failed; no plaintext recovery")}
  }

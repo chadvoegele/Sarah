@@ -27,11 +27,12 @@ class HeySarahListenerService:Service() {
  private var wakeLock:PowerManager.WakeLock?=null
  @Volatile private var command:OffscreenCommand?=null
  private var visibleCommand:VisibleCommandHandoff?=null
+ @Volatile private var modelWarmup:ListenerModelWarmup<HeySarahKeywordEngine>?=null
  private var foregroundNotification:Notification?=null
  private var closed=false
  private val teardown=ServiceTeardown(
-  {session.stopListening();command?.stop();visibleCommand?.stop()},
-  {worker==null && listenerCleanup.complete && session.released && command?.cleanupComplete!=false && (visibleCommand==null || (visibleCommand?.cleanupComplete==true && AudioArbiter.idle()))},
+  {session.stopListening();command?.stop();visibleCommand?.stop();modelWarmup?.cancel()},
+  {worker==null && listenerCleanup.complete && session.released && modelWarmup?.complete!=false && command?.cleanupComplete!=false && (visibleCommand==null || (visibleCommand?.cleanupComplete==true && AudioArbiter.idle()))},
   {stopForeground(STOP_FOREGROUND_REMOVE);stopSelf()})
  private fun requestStop() {
   teardown.stop() // synchronous invalidation; no framework stopService
@@ -109,6 +110,7 @@ class HeySarahListenerService:Service() {
   try {
    check(safe())
    diagnostic.phase("audio-focus")
+   var phaseAt=SystemClock.elapsedRealtime()
    routesAttempted=true
    audio.registerAudioDeviceCallback(routes,main)
    val request=AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
@@ -116,20 +118,34 @@ class HeySarahListenerService:Service() {
     .setOnAudioFocusChangeListener({session.onAudioFocusChange(it)},main).build()
    focus=request
    check(audio.requestAudioFocus(request)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+   diagnostic.duration("focusMs",SystemClock.elapsedRealtime()-phaseAt)
    val min=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
    check(min>0)
    diagnostic.phase("recorder-create")
+   phaseAt=SystemClock.elapsedRealtime()
    val r=listenerCleanup.construct {AudioRecord(MediaRecorder.AudioSource.MIC,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,maxOf(min,4096))}
    recorder=r;check(r.state==AudioRecord.STATE_INITIALIZED)
+   diagnostic.duration("recorderMs",SystemClock.elapsedRealtime()-phaseAt)
    recordingCallbackAttempted=true
    audio.registerAudioRecordingCallback(silenced,main)
    diagnostic.phase("model-create")
-   val e=listenerCleanup.construct {HeySarahKeywordEngine(assets)};engine=e
+   phaseAt=SystemClock.elapsedRealtime()
+   // Model may have loaded during preceding command; only this worker feeds it.
+   val prewarmed=modelWarmup
+   val e=if(prewarmed!=null) checkNotNull(prewarmed.take()) {"Model warmup cancelled"}
+    else listenerCleanup.construct {HeySarahKeywordEngine(assets)}
+   engine=e
+   diagnostic.duration("modelMs",SystemClock.elapsedRealtime()-phaseAt)
+   prewarmed?.durationMs?.let {diagnostic.duration("warmupMs",it)}
+   phaseAt=SystemClock.elapsedRealtime()
    e.arm() // JNI stream recreation outside stop/native-start ownership lock.
+   diagnostic.duration("armMs",SystemClock.elapsedRealtime()-phaseAt)
    modelArmed=true
    diagnostic.phase("record-start")
+   phaseAt=SystemClock.elapsedRealtime()
    check(session.nativeStart.start({gate.listening(safe()) && window?.valid(SystemClock.elapsedRealtime())==true}) {startAttempted=true;r.startRecording()})
    check(r.recordingState==AudioRecord.RECORDSTATE_RECORDING)
+   diagnostic.duration("recordStartMs",SystemClock.elapsedRealtime()-phaseAt)
    diagnostic.recordingStarted()
    val owner=session
    check(owner.gate.publishReady(modelArmed,r.recordingState==AudioRecord.RECORDSTATE_RECORDING,{
@@ -180,11 +196,12 @@ class HeySarahListenerService:Service() {
   }, {safe() && window?.valid(SystemClock.elapsedRealtime())==true}, {
    dispatched=true
    if(visible && getSystemService(PowerManager::class.java).isInteractive) {
+    prepareNextModel()
     val listenerOwner=session
     var resolved=false
     lateinit var handoff:VisibleCommandHandoff
     val completion=ServiceCommandCompletion(
-     {listenerCleanup.complete && listenerOwner.released && AudioArbiter.idle() && !OffscreenOwnership.held()},
+     {handoff.cleanupComplete && listenerCleanup.complete && listenerOwner.released && AudioArbiter.idle() && !OffscreenOwnership.held()},
      {ServiceRearmPolicy.allowed(current===listenerOwner && session===listenerOwner && !closed,
       teardown.stopped,teardown.destroyed,optedStart,SystemClock.elapsedRealtime(),safe(),
       AudioEligibility.allowed(this,true),resolved,persistent=true)}, {visibleCommand=null;rearmAfterCommand()}, {finishService()})
@@ -196,6 +213,7 @@ class HeySarahListenerService:Service() {
     val handed=AudioEligibility.allowed(this,true) && runCatching {onWake?.invoke()==true}.getOrDefault(false)
     if(!handed) {visibleCommand=null;stage("fallback");notifyWake();finishService()}
    } else if(AudioEligibility.allowed(this,true) && current===session && window?.valid(SystemClock.elapsedRealtime())==true) {
+    prepareNextModel()
     lateinit var completion:ServiceCommandCompletion
     // Fresh finite command budget, independent of the persistent listener opt-in.
     val owner=OffscreenCommand(this,ListenerWindow(SystemClock.elapsedRealtime(),persistent=false),
@@ -219,6 +237,17 @@ class HeySarahListenerService:Service() {
    if(!released) {stage("cleanup-failed");return}
   }
   if(!dispatched) finishService()
+ }
+ private fun prepareNextModel() {
+  // No mic/lease. Construction overlaps request/playback only after prior native
+  // listener cleanup ACK. Stop closes unused model before service-off.
+  val owner=session
+  val warm=ListenerModelWarmup({HeySarahKeywordEngine(assets)}) {
+   main.post {if(session===owner && (teardown.stopped || teardown.destroyed ||
+    (visibleCommand==null && command==null))) finishService()}
+  }
+  modelWarmup=warm
+  if(!warm.start()) modelWarmup=null // no constructor ran; cold path remains safe
  }
  private fun rearmAfterCommand():Boolean {
   // Same still-running microphone FGS; never cold-start from background, renew consent,
@@ -262,6 +291,7 @@ class HeySarahListenerService:Service() {
  }
  private fun finishService() {
   if(closed) return
+  modelWarmup?.cancel() // close unused native model; taken model belongs to listener finally
   // Neither a dead listener worker nor cancellation is a native listener/command cleanup ACK.
   if(!teardown.finish()) return
   closed=true

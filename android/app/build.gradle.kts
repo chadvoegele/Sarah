@@ -42,7 +42,7 @@ android {
    ndk { abiFilters += "arm64-v8a" }
   }
   create("lenovo") {
-   dimension = "device"; versionCode = 60; versionName = "0.1.60-lenovo-sarah-ready-review"
+   dimension = "device"; versionCode = 62; versionName = "0.1.62-lenovo-rearm-speed-review"
    buildConfigField("String", "WAKE_PHRASE", "\"Sarah\"")
    buildConfigField("String", "WAKE_RESULT_ALIAS", "\"SARAH\"")
    buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.24f")

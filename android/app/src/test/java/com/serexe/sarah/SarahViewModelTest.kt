@@ -480,6 +480,22 @@ class SarahViewModelTest {
   }
   assertEquals(4,restarts);assertEquals(0,stops)
  }
+ @Test fun resumedActivityAcceptsExactServiceCapabilityAndReturnsAfterSpokenReply()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true)
+  f.vm.onForeground();HeySarahListenerService.status.value="Wake listening"
+  f.vm.onForeground();assertFalse(f.vm.ui.value.canCapture)
+  HeySarahListenerService.status.value="released"
+  var returned=0;var resolved=false;var live=true
+  val handoff=VisibleCommandHandoff({live},{resolved=it;returned++})
+  try {
+   assertTrue(f.vm.acceptWake(handoff));assertFalse(f.vm.acceptWake(handoff))
+   f.mic.end.complete(Unit);delay(50)
+   assertEquals(1,f.wire.posts);assertEquals("playing",f.vm.ui.value.phase)
+   assertEquals(0,returned)
+   f.sound.finish();assertEquals(1,returned);assertTrue(resolved)
+   assertEquals(0,f.rearms());assertEquals("done",f.vm.ui.value.phase)
+  } finally {live=false;f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
  @Test fun visibleHandoffWaitsForPlaybackAndStopCleanupAndNeverReplaysUnknown()=runBlocking {
   val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true);f.vm.onForeground()
   var completed=0;var resolved=false

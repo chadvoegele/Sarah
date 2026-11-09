@@ -29,6 +29,12 @@ internal class WakeCaptureDiagnostics(
  private var feeds = 0L
  private var peak = 0
  private var sumSquares = 0.0
+ private val setupDurations=linkedMapOf<String,Long>()
+
+ fun duration(name:String, milliseconds:Long) {
+  require(name in setOf("focusMs","recorderMs","modelMs","warmupMs","armMs","recordStartMs"))
+  setupDurations[name]=milliseconds
+ }
 
  fun phase(value: String) {
   require(value in setOf("gate", "audio-focus", "recorder-create", "model-create", "record-start", "read", "model-feed"))
@@ -73,7 +79,8 @@ internal class WakeCaptureDiagnostics(
    else -> "other-exception"
   }
  }
- fun summary(): String = "timeMs=$startedAtMs recordingStartedAtMs=${recordingStartedAtMs ?: -1} result=$result phase=$phase recordingStarted=$started reads=$reads samples=$samples nonzero=$nonzero modelFeeds=$feeds peak=$peak rms=${if (samples == 0L) 0 else sqrt(sumSquares / samples).toInt()}"
+ fun summary(): String = "timeMs=$startedAtMs recordingStartedAtMs=${recordingStartedAtMs ?: -1} result=$result phase=$phase recordingStarted=$started reads=$reads samples=$samples nonzero=$nonzero modelFeeds=$feeds peak=$peak rms=${if (samples == 0L) 0 else sqrt(sumSquares / samples).toInt()}" +
+  setupDurations.entries.joinToString("") { " ${it.key}=${it.value}" }
  fun timedSummary():String = buildString {
   append("timeMs=$startedAtMs recordingStartedAtMs=${recordingStartedAtMs ?: -1} recordingStartedElapsedMs=${recordingAtMs ?: -1} recordingStarted=$started coverageMs=32000 bucketMs=1000 hitOffsetMs=${hitAtMs ?: -1} (only first 32s; later audio not measured)")
   buckets.forEachIndexed { index,b -> if(b.reads>0 || b.feeds>0 || b.hit) append('\n').append(b.line(index)) }

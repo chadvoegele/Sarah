@@ -101,7 +101,7 @@ class MainActivity:ComponentActivity() {
  override fun onNewIntent(intent:Intent) {super.onNewIntent(intent);setIntent(intent);if(locked()) {finish();return};assistantOpened=isAssistantInvocation(intent)}
  override fun onResume() {super.onResume();if(locked()) {finish();return};refreshRole();HeySarahListenerService.visible=true
   HeySarahListenerService.onWake={
-   if(locked() || !getSystemService(android.os.PowerManager::class.java).isInteractive || !HeySarahListenerService.visible) false else vm.acceptWake().also {accepted->
+   if(locked() || !getSystemService(android.os.PowerManager::class.java).isInteractive || !HeySarahListenerService.visible) false else vm.acceptWake(HeySarahListenerService.visibleHandoff()).also {accepted->
     if(accepted) runCatching {getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(60,VibrationEffect.DEFAULT_AMPLITUDE))}
    }
   }
