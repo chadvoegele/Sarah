@@ -39,13 +39,15 @@ android {
    buildConfigField("String", "WAKE_PHRASE", "\"Hey Sarah\"")
    buildConfigField("String", "WAKE_RESULT_ALIAS", "\"HEY_SARAH\"")
    buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.25f")
+   buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "false")
    ndk { abiFilters += "arm64-v8a" }
   }
   create("lenovo") {
-   dimension = "device"; versionCode = 63; versionName = "0.1.63-lenovo-a2-ui-review"
+   dimension = "device"; versionCode = 65; versionName = "0.1.65-lenovo-followup-mic-review"
    buildConfigField("String", "WAKE_PHRASE", "\"Sarah\"")
    buildConfigField("String", "WAKE_RESULT_ALIAS", "\"SARAH\"")
    buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.24f")
+   buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "true")
    ndk { abiFilters += "armeabi-v7a" }
   }
  }

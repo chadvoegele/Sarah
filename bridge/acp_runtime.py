@@ -164,12 +164,12 @@ class ACPRuntime(VoiceRuntime):
             if any(r['id'] not in local for r in prior):
                 raise ACPError('acp_backend_requires_new_conversation')
 
-    async def reply_turn(self, text, history, *, device, conversation, dispatch=None):
+    async def reply_turn(self, text, history, *, device, conversation, dispatch=None, clarification=None):
         # Durable binding owns ACP tool/receipt execution.
         return await self._reply_bound(text, history, device=device,
-                                       conversation=conversation, dispatch=dispatch)
+                                       conversation=conversation, dispatch=dispatch, clarification=clarification)
 
-    async def _reply_bound(self, text, history, *, device, conversation, dispatch=None):
+    async def _reply_bound(self, text, history, *, device, conversation, dispatch=None, clarification=None):
         """Exact session/policy binding; no new-session fallback or prompt replay."""
         self.store.own(device, conversation)
         if not isinstance(text, str) or not text.strip() or len(text) > 8000:
@@ -267,6 +267,11 @@ class ACPRuntime(VoiceRuntime):
                         self.store.db.execute('INSERT INTO acp_local_dialogue VALUES(?,?)',(session_id,r['id']))
                     client.dispatch = dispatch
                     answer = await client.prompt(session_id, text)
+                    expected = False
+                    if clarification is not None and client.dispatch_count==0:
+                        # Classifier failure cannot replay or invalidate completed speech.
+                        try: expected = await clarification(answer)
+                        except Exception: expected = False
                     # Unbind before ready; stale callbacks never retain a previous owner.
                     client.dispatch = None
                     client.turn_nonce = None
@@ -275,7 +280,7 @@ class ACPRuntime(VoiceRuntime):
                         (device, conversation, identity, session_id))
                     admitted = False
                     success = True
-                    return answer
+                    return (answer,expected) if clarification is not None else answer
             except BaseException:
                 if admitted:
                     self.store.db.execute(
@@ -295,6 +300,18 @@ class ACPRuntime(VoiceRuntime):
                 else:
                     self._idle = asyncio.create_task(self._expire())
 
+
+
+    async def clarification_intent(self, *, device, conversation, utterance, answer):
+        client=self._worker
+        if client is None or self._worker_key is None or self._worker_key[:2]!=(device,conversation):
+            return False
+        row=self.store.db.execute('SELECT session,state FROM acp_sessions WHERE device=? AND conversation=?',(device,conversation)).fetchone()
+        if row is None or row['state']!='inflight' or row['session']!=client.session_id or not client.turn_nonce:
+            return False
+        result=await client.request('_sarah/clarification',{'sessionId':row['session'],
+            'nonce':client.turn_nonce,'utterance':utterance,'answer':answer})
+        return result=={'reply_expected':True}
 
 
 def create_runtime(store, source, backend='acp'):

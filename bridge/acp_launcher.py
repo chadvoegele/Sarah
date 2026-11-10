@@ -98,6 +98,10 @@ def compose(loop, db, runtime_resolver=None):
 
     turn_owner = ContextVar("sarah_turn_owner", default=None)
 
+    class ClarificationAgent(AIAgent):
+        def _execute_tool_calls(self, *args, **kwargs):
+            raise ValueError('acp_clarification_tools_denied')
+
     class ScopedAgent(AIAgent):
         def run_conversation(self, user_message, system_message=None,
                              conversation_history=None, task_id=None,
@@ -196,6 +200,52 @@ def compose(loop, db, runtime_resolver=None):
         async def ext_method(self, method, params):
             if method == 'sarah/policy' and params == {}:
                 return {'policy': identity(), 'schemas': SCHEMAS}
+            if method == 'sarah/clarification' and isinstance(params,dict) and set(params)=={'sessionId','nonce','utterance','answer'}:
+                state=self.session_manager.get_session(params['sessionId'])
+                if (state is None or state.is_running or not isinstance(params['nonce'],str)
+                        or params['nonce']!=getattr(state.agent,'_sarah_nonce',None)
+                        or not isinstance(params['utterance'],str) or not isinstance(params['answer'],str)
+                        or not 0<len(params['utterance'])<=8000 or not 0<len(params['answer'])<=12000):
+                    raise ValueError('acp_clarification_binding_denied')
+                # Separate no-tool semantic decision: no history or action authority.
+                agent=getattr(state.agent,'_sarah_clarifier',None)
+                if agent is None:
+                    source=state.agent
+                    agent=ClarificationAgent(model=source.model,provider=source.provider,
+                        api_key=source.api_key,base_url=source.base_url,api_mode=source.api_mode,
+                        enabled_toolsets=['sarah_clarification_no_tools'],disabled_toolsets=[],
+                        quiet_mode=True,max_iterations=1,skip_context_files=True,
+                        load_soul_identity=False,skip_memory=True,fallback_model=None,
+                        checkpoints_enabled=False,platform='acp',
+                        ephemeral_system_prompt=(
+                            'Classify whether the assistant directly asks the user for a reply '
+                            'that continues the current conversational request. This includes '
+                            'a short missing fact needed to answer, or a genuine question '
+                            'addressed to the user when the user explicitly asks the assistant to ask them a question. '
+                            'Return JSON only, exactly {"reply_expected":true} or '
+                            '{"reply_expected":false}. True only when the response directly '
+                            'invites the user to answer that question now and the reply can '
+                            'safely continue the same conversation. False for ordinary answers, '
+                            'quoted or hypothetical questions not addressed to the user, '
+                            'rhetorical questions, open-ended offers, followup suggestions, '
+                            'action approval or confirmation, permission requests, sensitive '
+                            'action consent, uncertainty, refusal, error, and ambiguous intent. '
+                            'This signal never authorizes an action. No tools, no prior history.'))
+                    if (getattr(agent,'tools',None)!=[] or getattr(agent,'valid_tool_names',None)!=set()
+                            or getattr(agent,'_fallback_chain',None)!=[]):
+                        raise ValueError('acp_clarification_tools_denied')
+                    setattr(agent,'_skip_mcp_refresh',True)
+                    state.agent._sarah_clarifier=agent
+                try:
+                    from .acp_client import settle
+                    classified=await settle(asyncio.create_task(asyncio.to_thread(agent.run_conversation,
+                        json.dumps({'user_request':params['utterance'],'assistant_response':params['answer']}),
+                        conversation_history=[])))
+                    raw=classified.get('final_response') if isinstance(classified,dict) else None
+                    result=json.loads(raw) if isinstance(raw,str) and len(raw)<64 else None
+                    return {'reply_expected':result=={'reply_expected':True}}
+                except (ValueError,TypeError):
+                    return {'reply_expected':False}
             if method == 'sarah/turn' and isinstance(params, dict) and set(params) == {'sessionId','nonce','dialogue'}:
                 state = self.session_manager.get_session(params['sessionId'])
                 nonce, dialogue = params['nonce'], params['dialogue']
