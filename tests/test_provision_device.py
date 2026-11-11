@@ -72,6 +72,33 @@ class ProvisionDevice(unittest.TestCase):
             provision_device.provision(self.path, '../invalid', TOKEN)
         self.assertFalse(self.path.exists())
 
+    def run_cli(self, contents):
+        token_file = Path(self.tmp.name) / 'token'
+        token_file.write_bytes(contents)
+        with patch('sys.argv', ['provision_device', '--db', str(self.path),
+                               '--device', 'device', '--token-file', str(token_file)]), \
+                patch('sys.stdout'), patch('sys.stderr'):
+            provision_device.main()
+
+    def test_cli_trims_surrounding_file_whitespace_idempotently(self):
+        for suffix in (b'', b'\n', b'\r\n', b'\n\n'):
+            self.run_cli(TOKEN.encode() + suffix)
+        self.run_cli(b' \t\r\n' + TOKEN.encode() + b'\r\n\t ')
+        self.assertEqual(self.rows(), [('device', hashlib.sha256(TOKEN.encode()).hexdigest(), 0)])
+
+    def test_cli_accepts_maximum_token_with_crlf(self):
+        self.run_cli(b'A' * 256 + b'\r\n')
+        self.assertEqual(self.rows(), [('device', hashlib.sha256(b'A' * 256).hexdigest(), 0)])
+
+    def test_cli_rejects_invalid_or_oversized_files_before_db(self):
+        for contents in (b' \r\n\t', b'A' * 257, b'A' * 30 + b' ' + b'B' * 30,
+                         TOKEN.encode() + b'\xff', TOKEN.encode() + b'\0',
+                         TOKEN.encode() + b'\n' + b' ' * 4096):
+            with self.subTest(size=len(contents)), self.assertRaises(SystemExit) as raised:
+                self.run_cli(contents)
+            self.assertEqual(raised.exception.code, 1)
+            self.assertFalse(self.path.exists())
+
     def test_two_writers_same_key_or_conflict(self):
         # Both connections open before either starts the provisioning transaction.
         for second in (TOKEN, OTHER):

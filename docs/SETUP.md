@@ -14,7 +14,7 @@ These examples are not deployment approval. Do not create/rotate keys, install o
      --device android --token-file /etc/sarah/device.token
    ```
 
-   The file must contain exactly 40–256 printable ASCII bytes with **no whitespace or trailing newline**. The token is hashed. Re-provisioning the same token is idempotent; a different, reassigned or revoked token fails without rotation. There is no admin HTTP provisioning route and no command here creates a token.
+   Surrounding file whitespace (including LF/CRLF line endings) is stripped before validation. The token itself must contain 40–256 printable ASCII characters without whitespace; files larger than 4096 bytes are rejected. The token is hashed. Re-provisioning the same token is idempotent; a different, reassigned or revoked token fails without rotation. There is no admin HTTP provisioning route and no command here creates a token.
 4. Start with TLS, or explicitly loopback HTTP behind a reviewed TLS proxy:
 
    ```sh
