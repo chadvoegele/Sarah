@@ -22,6 +22,23 @@ class VoiceReplyTest {
   assertEquals(12.5,row.getJSONObject("timings").getDouble("stt_ms"),0.0)
   assertTrue(source.has("command")) // never mutate a caller's row
  }
+ @Test fun realRelayEnvelopesMatchSharedPythonContract() {
+  val fixtures=requireNotNull(javaClass.getResourceAsStream("/voice-relay.json")).use {
+   JSONObject(it.bufferedReader().readText())
+  }
+  for(state in listOf("speaking","done","uncertain","cancelled")) {
+   val source=fixtures.getJSONObject(state)
+   val row=VoiceReply.read(source)
+   assertEquals(state,row.getString("state"))
+   for(key in listOf("id","conversation","detail","transcript","audio")) {
+    assertEquals(source.get(key),row.get(key))
+   }
+   assertFalse(row.has("reply_expected"))
+   assertFalse(ClarificationReply.valid(row,"synthetic-conversation","synthetic-turn","fresh","fresh"))
+   if(state=="speaking") assertEquals(2,row.getJSONObject("audio_chunks").getInt("count"))
+   else assertFalse(row.has("audio_chunks"))
+  }
+ }
  @Test fun legacyEnvelopesFailClosedIncludingStoredReceiptsAndMalformedValues() {
   for(key in listOf("phone_action","confirmation")) {
    for(state in listOf("speaking","done","error","uncertain")) {

@@ -6,7 +6,7 @@ This branch re-forks upstream `serexe/sarah-r1` at `fa993b1` as an Android speec
 
 Phone/Lenovo wake detection, opt-in, capture, waveform/caption, sentence playback, encrypted pairing, history, diagnostics and read-only uncertain-request recovery remain. This source change performs no install, deployment, key creation/rotation or database migration. The historical upstream evidence below is not validation of this refork.
 
-Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared source descends from **[Android golden v50](../SARAH_BASELINE.md)** reconstructed development source. Golden v50 tag and approved APK remain unchanged; **exact v50 source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The repository's existing `app/` remains the separate Ubuntu Touch client.
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared source descends from Android golden v50 reconstructed development source. Golden v50 tag and approved APK remain unchanged; **exact v50 source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The former Ubuntu Touch client is removed; `android/app/` is the sole client product.
 
 ## Included source
 

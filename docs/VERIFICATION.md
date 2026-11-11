@@ -38,6 +38,23 @@ python tools/privacy_scan.py "$review_dir"
 
 Review the manifest itself first. Do not scan a working directory and waive its private/unmanifested files; the scanner intentionally rejects those. A clean scan is only heuristic and does not prove absence of secrets or permission to publish. Do not include Android's upstream binaries in this bridge-only export or infer that their provenance has been checked by this gate.
 
+## Combined integration review
+
+The combined branch merges bridge `88caf08` and Android `8f1ed68` from the ancestry-preserving upstream baseline `647f86d` (`fa993b1` tree plus an ancestry-only merge of old fork `adbbd42`). Old fork code was read with `git show`, not edited or merged into the upstream tree again.
+
+On the integration host, a disposable Python 3.14 environment was created with `uv venv /tmp/sarah-integration-venv` and declared requirements installed using `uv pip install --python /tmp/sarah-integration-venv/bin/python -r requirements.txt -r requirements-dev.txt`. `/tmp/sarah-integration-venv/bin/python -m pytest -q` passed **137 tests and 124 subtests**. That includes five Android source audits, not Kotlin execution.
+
+Independent cross-contract tests exercise WAV -> stub STT -> real disposable Unix ACP peer -> stub TTS -> sentence MP3 polling/download/ACK; exact session reload for a fresh ordinary follow-up; Stop during the agent versus Stop during speech; permission/delegated-dispatch refusal; deadline uncertainty; read-only lookup and no prompt replay. Shared `tests/fixtures/voice-relay.json` envelopes are asserted against HTTP responses and loaded by Android's `VoiceReplyTest`. The follow-up HTTP test checks fresh keys without the bridge-rejected legacy clarification header. The new Kotlin tests are source only until the following build blocker is resolved.
+
+Both commands were attempted from `android/`:
+
+```sh
+./gradlew --no-daemon :app:testPhoneDebugUnitTest :app:testLenovoDebugUnitTest
+./gradlew --no-daemon :app:assemblePhoneDebug :app:assembleLenovoDebug
+```
+
+Both stopped before Gradle/compilation: `JAVA_HOME is not set and no 'java' command could be found in your PATH`. Java, javac, Kotlin, Gradle and sdkmanager were absent from PATH; JDK/SDK checks under `/usr/lib`, `/usr/local`, `/opt`, `/mnt`, `~/Android` and `~/.gradle` found no usable toolchain. `adb` alone is not a build toolchain. JAVA_HOME/ANDROID_HOME/ANDROID_SDK_ROOT were unset. No signing material was read, created or retrieved. No Kotlin/JVM result or APK is claimed. Historical upstream JVM failures remain unverified rather than counted as passing.
+
 ## Separate authorization required
 
-Not performed by this source task: Docker image build/model downloads, container/service deployment, certificate/proxy reachability, real ACP/provider requests, Android build/install, physical wake/capture/playback, background/permission/OEM validation, key creation/rotation or production database changes. Run those only under an explicit live-validation plan. The integration agent must validate the combined Android/bridge branch; this branch intentionally leaves `android/` untouched.
+Not performed: Docker image build/model downloads, container/service deployment, certificate/proxy reachability, real ACP/provider requests, Android install, physical wake/capture/playback, instrumentation/background/permission/OEM validation, key creation/rotation or production database changes. Run those only under an explicit live-validation plan. Android compilation remains a tooling blocker, not physical validation and not a source-audit pass.

@@ -1,6 +1,8 @@
 """Real HTTP + disposable ACP peer; transcript and MP3 bytes are synthetic."""
 import asyncio
 import io
+import json
+from pathlib import Path
 import threading
 import unittest
 import wave
@@ -53,10 +55,113 @@ class RelayTests(ACPFixture, unittest.IsolatedAsyncioTestCase):
                 result = await response.json()
                 if result['state'] in ('done', 'error', 'uncertain', 'cancelled'):
                     return result
-                await asyncio.sleep(.005)
+                await asyncio.sleep(.02)
 
     def prompts(self):
         return [message['params']['prompt'] for message in self.requests if message['method'] == 'session/prompt']
+
+    def assert_wire_fixture(self, row, name):
+        fixture = json.loads((Path(__file__).parent/'fixtures/voice-relay.json').read_text())[name]
+        actual = {key: row[key] for key in fixture}
+        actual.update(id='synthetic-turn', conversation='synthetic-conversation')
+        self.assertEqual(actual, fixture)
+        for key in ('confirmation', 'phone_action', 'phone_command', 'reply_expected', 'tools'):
+            self.assertNotIn(key, row)
+
+    async def wait_for_chunks(self, turn):
+        async with asyncio.timeout(2):
+            while True:
+                response = await self.client.get('/v1/turns/'+turn, headers=self.headers())
+                row = await response.json()
+                if row.get('audio_chunks', {}).get('count') == 2:
+                    return row
+                await asyncio.sleep(.01)
+
+    async def test_android_sentence_contract_and_plain_followup_load_same_session(self):
+        self.transcript = 'Set a timer for five minutes'
+        self.answers = ['First. Second. Third.', 'What duration?']
+        turn = await self.submit(**{'X-Audio-Chunks': 'sentence-mp3-v1'})
+        self.assert_wire_fixture(await self.wait_for_chunks(turn), 'speaking')
+        session = self.binding()['session']
+        for seq in range(3):
+            async with asyncio.timeout(2):
+                while True:
+                    response = await self.client.get('/v1/turns/'+turn,
+                        headers=self.headers(**{'X-Audio-After': str(seq)}))
+                    row = await response.json()
+                    if row['audio_chunks']['count'] > seq:
+                        break
+                    await asyncio.sleep(.01)
+            response = await self.client.get(f'/v1/turns/{turn}/audio/{seq}', headers=self.headers())
+            self.assertEqual(response.content_type, 'audio/mpeg')
+            self.assertEqual(await response.read(), b'synthetic MP3')
+        await self.client.get('/v1/turns/'+turn, headers=self.headers(**{'X-Audio-After': '3'}))
+        self.assert_wire_fixture(await self.finished(turn), 'done')
+        self.assertFalse(list((self.root/'media').glob(turn+'*.mp3')))
+        self.transcript = 'Actually ten minutes'
+        row = await self.finished(await self.submit('fresh-followup'))
+        self.assertEqual(row['detail'], 'What duration?')
+        self.assertEqual(self.binding()['session'], session)
+        loads = [m['params']['sessionId'] for m in self.requests if m['method'] == 'session/load']
+        self.assertEqual(loads, [session])
+        self.assertEqual(self.prompts(), [[{'type': 'text', 'text': text}] for text in
+            ('Set a timer for five minutes', 'Actually ten minutes')])
+
+    async def test_android_stop_during_agent_is_uncertain_and_never_replaced(self):
+        self.transcript = 'Set a timer for five minutes'
+        self.mode = 'stall'
+        turn = await self.submit(**{'X-Audio-Chunks': 'sentence-mp3-v1'})
+        await asyncio.wait_for(self.started.wait(), 1)
+        response = await self.client.post(f'/v1/turns/{turn}/cancel', json={}, headers=self.headers())
+        # Cancel replies have the store envelope; polling adds audio availability.
+        self.assertEqual((await response.json())['state'], 'uncertain')
+        await asyncio.wait_for(self.closed.wait(), 1)
+        row = await self.finished(turn)
+        self.assert_wire_fixture(row, 'uncertain')
+        self.assertEqual(self.binding()['state'], 'uncertain')
+        self.assertTrue(self.cancelled.is_set())
+        self.assertEqual(await self.submit(), turn)
+        response = await self.client.post('/v1/turns', data=wav_bytes(), headers=self.headers('next'))
+        self.assertEqual(response.status, 409)
+        self.assertEqual(len(self.prompts()), 1)
+
+    async def test_android_stop_during_speech_does_not_poison_completed_agent_session(self):
+        self.transcript = 'Set a timer for five minutes'
+        self.answers = ['First. Second. Third.']
+        turn = await self.submit(**{'X-Audio-Chunks': 'sentence-mp3-v1'})
+        await self.wait_for_chunks(turn)
+        response = await self.client.post(f'/v1/turns/{turn}/cancel', json={}, headers=self.headers())
+        self.assertEqual((await response.json())['state'], 'cancelled')
+        self.assert_wire_fixture(await self.finished(turn), 'cancelled')
+        async with asyncio.timeout(2):
+            while list((self.root/'media').glob(turn+'*.mp3')):
+                await asyncio.sleep(.01)
+        self.assertEqual(self.binding()['state'], 'ready')
+        self.assertEqual((await self.finished(await self.submit('next')))['state'], 'done')
+        self.assertEqual(len(self.prompts()), 2)
+
+    async def test_agent_client_permissions_and_dispatch_are_denied_over_voice_path(self):
+        self.mode = 'permission'
+        row = await self.finished(await self.submit())
+        self.assertEqual(row['state'], 'done')
+        self.assertEqual(row['detail'], 'Reply: What time is it? café')
+        permission, *unsupported = self.client_responses
+        self.assertEqual(permission['result'], {'outcome': {'outcome': 'cancelled'}})
+        self.assertTrue(all(reply['error']['code'] == -32601 for reply in unsupported))
+        self.assertEqual(len(unsupported), 3)
+        self.assertEqual(len(self.prompts()), 1)
+
+    async def test_agent_deadline_preserves_uncertain_text_only_receipt(self):
+        self.mode = 'stall'
+        turn = await self.submit()
+        row = await self.finished(turn)
+        self.assertEqual(row['state'], 'uncertain')
+        self.assertIn('(TimeoutError)', row['detail'])
+        self.assertFalse(row['audio'])
+        self.assertEqual(self.binding()['state'], 'uncertain')
+        lookup = await self.client.get('/v1/requests/one', headers=self.headers())
+        self.assertEqual((await lookup.json())['id'], turn)
+        self.assertEqual(len(self.prompts()), 1)
 
     async def test_no_semantic_fast_paths_all_transcripts_are_plain_agent_prompts(self):
         for index, text in enumerate(('What time is it?', 'Set a timer for five minutes',

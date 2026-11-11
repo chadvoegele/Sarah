@@ -58,6 +58,7 @@ android {
  kotlinOptions { jvmTarget = "17" }
  buildFeatures { compose = true; buildConfig = true }
  packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+ sourceSets.getByName("test").resources.srcDir(rootProject.file("../tests/fixtures"))
  testOptions { unitTests.isReturnDefaultValues = true }
 }
 val verifySherpaAar by tasks.registering {

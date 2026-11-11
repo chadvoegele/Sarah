@@ -1,0 +1,35 @@
+{
+  "speaking": {
+    "id": "synthetic-turn",
+    "conversation": "synthetic-conversation",
+    "state": "speaking",
+    "detail": "First. Second. Third.",
+    "transcript": "Set a timer for five minutes",
+    "audio": false,
+    "audio_chunks": {"count": 2, "complete": false}
+  },
+  "done": {
+    "id": "synthetic-turn",
+    "conversation": "synthetic-conversation",
+    "state": "done",
+    "detail": "First. Second. Third.",
+    "transcript": "Set a timer for five minutes",
+    "audio": false
+  },
+  "uncertain": {
+    "id": "synthetic-turn",
+    "conversation": "synthetic-conversation",
+    "state": "uncertain",
+    "detail": "Stopped while agent was active. Outcome unknown; no automatic retry. Start a new conversation after reconciliation.",
+    "transcript": "Set a timer for five minutes",
+    "audio": false
+  },
+  "cancelled": {
+    "id": "synthetic-turn",
+    "conversation": "synthetic-conversation",
+    "state": "cancelled",
+    "detail": "Cancelled locally. Does not undo actions already taken by the agent.",
+    "transcript": "Set a timer for five minutes",
+    "audio": false
+  }
+}

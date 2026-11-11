@@ -48,6 +48,7 @@ class VoiceOnlySourceTest(unittest.TestCase):
              "/v1/requests/$request", "/v1/turns/$turn", "/v1/turns/$turn/audio",
              "/v1/turns/$turn/audio/$seq", "/v1/turns/$turn/cancel"}, routes,
         )
+        self.assertNotIn('X-Clarification-Parent', read("Bridge.kt"))
         for marker in ('followRedirects(false)', 'followSslRedirects(false)',
                        'retryOnConnectionFailure(false)', 'override fun isOneShot()=true',
                        'cert.checkValidity()', 'X-Audio-Chunks', 'sentence-mp3-v1',

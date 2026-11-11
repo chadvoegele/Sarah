@@ -32,6 +32,7 @@ requirements-tts.txt
 requirements.txt
 tests/acp_fixture.py
 tests/conftest.py
+tests/fixtures/voice-relay.json
 tests/test_acp.py
 tests/test_acp_config.py
 tests/test_diagnostics.py

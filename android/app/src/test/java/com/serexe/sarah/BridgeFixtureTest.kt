@@ -33,7 +33,7 @@ class BridgeFixtureTest {
    assertEquals("GET",get.method);assertEquals("/v1/requests/$request",get.path);assertNull(get.getHeader("X-Audio-After"));assertNull(get.getHeader("Idempotency-Key"));assertEquals(6,server.requestCount)
   } finally {server.shutdown()}
  }
- @Test fun routesAndReadOnlyRecovery() {
+ @Test fun routesAndReadOnlyRecovery()=kotlinx.coroutines.runBlocking {
   val ca=HeldCertificate.Builder().certificateAuthority(1).commonName("Synthetic fixture CA").build()
   val leaf=HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").signedBy(ca).build()
   val server=MockWebServer()
@@ -60,6 +60,19 @@ class BridgeFixtureTest {
    assertEquals("done",api.lookup("request-1").getString("state"))
    assertEquals("GET",server.takeRequest(2,TimeUnit.SECONDS)!!.method)
    assertEquals(4,server.requestCount) // no duplicate POST
+   for(async in listOf(false,true)) {
+    server.enqueue(MockResponse().setResponseCode(202).setBody("{\"turn\":\"t2\"}"))
+    val result=if(async) api.submitCancellable("c1","fresh-async",Wav.encode(ByteArray(8000)),"t1")
+     else api.submitClarification("c1","fresh-sync",Wav.encode(ByteArray(8000)),"t1")
+    assertEquals("t2",result)
+    val followup=server.takeRequest(2,TimeUnit.SECONDS)!!
+    assertEquals("POST",followup.method);assertEquals("/v1/turns",followup.path)
+    assertEquals("c1",followup.getHeader("X-Conversation"))
+    assertEquals(if(async) "fresh-async" else "fresh-sync",followup.getHeader("Idempotency-Key"))
+    assertEquals("sentence-mp3-v1",followup.getHeader("X-Audio-Chunks"))
+    assertNull(followup.getHeader("X-Clarification-Parent"))
+   }
+   assertEquals(6,server.requestCount)
   } finally {server.shutdown()}
  }
  @Test fun redirectsDeniedAndNoCredentialForwarding() {
