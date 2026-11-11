@@ -4,13 +4,17 @@ import org.json.JSONObject
 
 /** Seams used by production owner and local deterministic tests. */
 interface BridgePort {
+ fun sendDiagnostics(payload:JSONObject):String=throw UnsupportedOperationException()
  fun health():JSONObject
  fun create():String
  fun submit(conversation:String,request:String,wav:ByteArray):String
+ fun submitClarification(conversation:String,request:String,wav:ByteArray,parent:String):String=throw UnsupportedOperationException()
  fun lookup(request:String):JSONObject
  fun poll(turn:String):JSONObject
  fun cancel(turn:String):JSONObject
  fun audio(turn:String):ByteArray
+ fun pollChunks(turn:String,after:Int):JSONObject=poll(turn)
+ fun audioChunk(turn:String,seq:Int):ByteArray=throw UnsupportedOperationException()
 }
 interface StateStore {
  fun load():JSONObject

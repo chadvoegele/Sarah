@@ -2,8 +2,33 @@ package com.serexe.sarah
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.File
 
 class ListenerWindowTest {
+ @Test fun persistentOptInHasNoTwoMinuteExpiryButRejectsPreStartClock() {
+  val window=ListenerWindow(1000,persistent=true)
+  assertFalse(window.valid(999));assertTrue(window.valid(1000));assertTrue(window.valid(121000))
+  assertTrue(window.valid(86_401_000))
+ }
+ @Test fun productionTaskRemovalKeepsStartedMicrophoneOwnerAndExplicitStop() {
+  val manifest=File("src/main/AndroidManifest.xml").readText()
+  assertFalse(manifest.contains("android:stopWithTask=\"true\""))
+  val service=File("src/main/java/com/serexe/sarah/HeySarahListenerService.kt").readText()
+  assertFalse(service.contains("onTaskRemoved(rootIntent:Intent?) {stop(this)"))
+  assertTrue(service.contains("if(intent?.action==STOP) {stop(this)"))
+  assertTrue(service.contains("instance?.requestStop()"))
+  assertTrue(service.contains("listenerCleanup.complete && session.released"))
+  assertTrue(service.contains("ListenerWindow(optedStart,persistent=true)"))
+  assertFalse(service.contains("main.postDelayed(cutoff"))
+ }
+ @Test fun lockedWakeDoesNotRecordCommandOrConsumePersistentOptIn() {
+  val service=File("src/main/java/com/serexe/sarah/HeySarahListenerService.kt").readText()
+  val locked=service.substringAfter("} else {\n    stage(\"locked\")").substringBefore("}, {worker=null")
+  assertTrue(locked.contains("notifyWake()"))
+  assertTrue(locked.contains("isDeviceLocked"))
+  assertTrue(locked.contains("rearmAfterCommand()"))
+  assertFalse(locked.contains("owner.start()"))
+ }
  @Test fun initializationConsumesSameTwoMinuteBudget() {
   val window=ListenerWindow(1000)
   assertTrue(window.valid(1000));assertTrue(window.valid(120999))

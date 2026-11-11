@@ -1,7 +1,9 @@
-# Local-only Android review workspace
+# Private local configuration, credentials, output and tooling state
 .local-review/
+.local-review
 .gradle/
 .gradle-cache/
+.kotlin/
 **/build/
 local.properties
 *.jks
@@ -13,12 +15,15 @@ local.properties
 *.env
 .env*
 *.apk
-*.aar
-*.so
-*.pcm
-app/src/androidTest/assets/
 *.aab
 *.log
 *.hprof
 .idea/
 *.iml
+*signing-pass*
+*.pcm
+# Audited launcher assets; parent repository ignores arbitrary PNGs.
+!/artwork/launcher-artwork-original.png
+!/app/src/main/res/mipmap-*/ic_launcher.png
+!/app/src/main/res/mipmap-*/ic_launcher_round.png
+!/app/src/main/res/mipmap-*/ic_launcher_foreground.png

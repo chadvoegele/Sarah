@@ -1,37 +1,70 @@
 # S.A.R.A.H Android
 
-Kotlin/Compose voice-assistant client for a separately operated HTTPS Sarah bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. This is development source, not a new APK release or a reproducibility claim.
+## Voice-only ACP refork
 
-## This fork
+This branch re-forks upstream `serexe/sarah-r1` at `fa993b1` as an Android speech interface to a generic ACP agent. Android captures speech, communicates with the authenticated HTTPS bridge, and presents assistant text/audio. The agent owns reasoning, context, tools and action authorization. There is no Android command dispatch, local clock answer, timer/alarm/schedule, media-library execution, bridge-integration approval, direct model backend or Hermes dependency. See [the voice-only contract and validation limits](VOICE-ONLY-ACP.md).
 
-Chad's Agent — the server uses ACP only. Basic protocol-1 voice/settings/playback/conversation behavior stays compatible with existing clients. The unused bridge integration-confirmation method/UI has been removed; unknown or historical confirmation outcomes stay uncertain and never trigger approval or resend. Health needs only protocol/readiness. Android JNI keyword/capture code and its licenses remain required. Version, signing and dependencies are unchanged.
+Phone/Lenovo wake detection, opt-in, capture, waveform/caption, sentence playback, encrypted pairing, history, diagnostics and read-only uncertain-request recovery remain. This source change performs no install, deployment, key creation/rotation or database migration. The historical upstream evidence below is not validation of this refork.
 
-## Behavior
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared source descends from Android golden v50 reconstructed development source. Golden v50 tag and approved APK remain unchanged; **exact v50 source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The former Ubuntu Touch client is removed; `android/app/` is the sole client product.
 
-- Foreground tap-to-talk, encrypted local pairing state, authenticated HTTPS bridge health/upload and reply playback; unknown upload admission is not blindly retried.
-- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
-- Adaptive speech endpointing; no-speech or 30-second cap discards. The mic-ready cue starts after native recording reports ready and drains its acoustic tail before retaining command PCM.
+## Included source
 
-Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is included.
+- Manual voice capture, HTTPS bridge communication, reply playback and local pairing storage.
+- Android assistant-role entry points and an explicitly enabled foreground-microphone service for local wake detection (“Hey Sarah” on phone; experimental “Nova” on Lenovo).
+- Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-## Build and test
+Current shared source has two **debug/local-review** variants. Both retain `com.serexe.sarah`, minSdk 26, targetSdk 35 and Keystore-backed pairing; they are alternative upgrades, not side-by-side installations. Phone: `phoneDebug`, ARM64 (`arm64-v8a`), `0.1.53-phone-review` / versionCode 53, retaining “Hey Sarah”, `HEY_SARAH` and threshold 0.25. Lenovo: `lenovoDebug`, ARMv7 (`armeabi-v7a`), `0.1.67-lenovo-nova-wake-review` / versionCode 67, using experimental “Nova”, exact `NOVA` result and threshold 0.24. Lenovo v66 introduced a per-recorder noise-suppression trial for wake listening and command/follow-up capture; v67 keeps it and changes only the Lenovo wake phrase/model keyword. The phone variant does not enable that suppression trial. These source variants are review candidates, not golden releases or published APKs. Installing the lower-version phone build over Lenovo 67 would be a downgrade; do not switch variants without planning a higher version. Historical v50 included local schedules, phone media and timer countdown/Cancel/Stop UI; those features, permissions, services, receivers and tests are removed from this refork. [Wake-word testing and customization](WAKE-WORD-TESTING.md) explains what can be changed and what still needs physical validation.
 
-Use JDK 17, Android SDK 35 and the Gradle 8.11.1 wrapper. The compiled sherpa-onnx AAR is intentionally not in Git. Retrieve the official v2.0.1 artifact from [third-party notices](THIRD-PARTY-NOTICES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7`; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notices are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
+## Privacy and setup
 
-`app/build.gradle.kts` reads private `.local-review/review.jks` and `.local-review/signing-pass` files for signed debug builds. Supply your own local signing inputs outside Git; never publish a signer or password. A locally rebuilt APK is not claimed identical to an upstream review APK.
+Provide your own HTTPS bridge origin and separate revocable device token at runtime. Example origin: `https://companion.example.invalid`. Never put provider credentials, tokens, private CA keys or personal configuration into source control.
 
-With these prerequisites installed, run from `android/`:
+The source implements local Android Keystore-backed storage and disables Android backups. Clearing local pairing or conversation does not delete server history or undo server actions. Reply playback uses temporary app-cache storage; process death may leave cache data until eviction. Do not treat this publication or static inspection as a runtime security audit.
+
+Assistant-role invocation alone does not start microphone capture. Persistent local wake listening requires a separate visible opt-in and foreground microphone notification; it can continue after closing the activity until explicitly stopped. Unlocked wake can record and submit a command to the paired bridge; locked wake is notification-only. Review the source and platform permissions before enabling it. No real pairing, transcript, recording or device configuration is included here.
+
+## Build prerequisites and limits
+
+Use JDK 17 and Android SDK platform/build-tools 35. Configure `ANDROID_HOME` for your own SDK installation. Gradle wrapper and declared dependencies require network access on an uncached machine.
+
+From this directory, build and run focused JVM checks separately:
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew --no-daemon :app:testPhoneDebugUnitTest :app:testLenovoDebugUnitTest
+./gradlew --no-daemon :app:assemblePhoneDebug :app:assembleLenovoDebug
+# Outputs: app/build/outputs/apk/phone/debug/app-phone-debug.apk
+#          app/build/outputs/apk/lenovo/debug/app-lenovo-debug.apk
 ```
 
-Unit tests use synthetic fixtures. Historical `ScreenshotPolicyTest.kt` remains, but private audio/instrumentation fixtures and test-server keys are not included. Offline tests do not establish physical-device, acoustic, background/OEM, live bridge or end-to-end reliability.
+A JDK-free source-contract audit can also run from the repository root:
 
-## Licensing and upstream records
+```sh
+python -m unittest discover -s android/tests -v
+```
 
-Owner-controlled source/artwork: [MIT LICENSE](LICENSE). Third-party components and models retain separate terms. [Third-party notices](THIRD-PARTY-NOTICES.md) record sherpa/model provenance and declared dependency license families. `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its third-party notices.
+Combined integration validation used user-authorized JDK 17/SDK 35 installation: both debug JVM suites passed, **245 tests each, 0 failures/errors/skips**. Initial six phone/three Lenovo failures reproduced on untouched upstream were remediated; see [exact evidence](../docs/VERIFICATION.md). Both debug assemblies are blocked only by absent private `android/.local-review/review.jks`; no key was generated or retrieved. Both unsigned release assemblies succeeded using `./gradlew --no-daemon :app:assemblePhoneRelease :app:assembleLenovoRelease`, with package/ABI/native-library checks. These unsigned artifacts are not a signed release or device validation. Five source audits also pass. No physical microphone/wake/playback, instrumentation, live ACP/provider request or install was performed.
 
-Preserved upstream [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and checksum manifests and `notices/` concern the separate historical code8 artifact where stated, not an APK built from this tree. Eigen covered-source downloads remain linked. These records are not an exhaustive SBOM or legal certification. Images under `docs/screenshots/` are historical code3 emulator captures with synthetic transcript text, not current device or live-service proof. Original launcher artwork retains C2PA generated-media provenance, not user credentials. [Code3 third-party notices](CODE3-THIRD-PARTY-NOTICES.md) and the Gradle license remain preserved.
+Keep these APKs separate. The selected ABI must have five native libraries in the final APK: `libandroidx.graphics.path.so`, `libonnxruntime.so`, `libsherpa-onnx-c-api.so`, `libsherpa-onnx-cxx-api.so` and `libsherpa-onnx-jni.so`. Check final APK contents, `aapt` metadata and `apksigner` before using any artifact. Do not use Gradle's aggregate `assembleDebug` as a substitute for explicit lane selection.
 
-No APK or compiled native AAR is committed. Upstream attribution is in the [repository README](../README.md).
+API 27/28 lacks `ROLE_ASSISTANT`; only there, the Lenovo-derived compatibility rule allows the persistent foreground microphone after visible user consent. API 29+ still requires the assistant role. Existing microphone permission, unlocked/privacy/audio-focus gates, notification and explicit Stop remain. No automatic always-listening, pairing reset, token change or bridge mutation is introduced. The Lenovo listener drains nonempty reads without a 20 ms post-read sleep; idle reads retain the backoff. App-private diagnostics retain bounded aggregate counters and timestamps, not audio or recognition text. `Wake listening` is emitted only after model arm and confirmed `AudioRecord` recording, with live owner/Stop/notification/deadline gates. This readiness cue does **not** prove acoustic detection. The v61 visible-wake handoff passes the service's exact live capability to the resumed Activity, allowing capture, spoken reply, and return to listening in the same foreground service only after native command cleanup ACK. Manual capture remains blocked while the service owns listening; Stop and original consent/deadline still apply. The v62 Lenovo rearm path preloads a model-only engine during command work after previous listener cleanup ACK, without opening microphone or taking capture lease. Next listener takes sole model ownership, arms a fresh stream and recorder, then reports readiness only after recording. Private bounded setup-phase durations can support future comparison; model-load time was not measured as v61's cause.
+
+The v61 visible foreground conversation was physically accepted; v62 rearm was reported “much much quicker.” No v62 millisecond measurement, quantified comparison or repeatability claim is made here. Prior focused v61 tests passed (15/15); prior focused v62 tests passed (18/18) and Lenovo assembly succeeded offline. Exact installed local v62 review APK SHA-256: `34667632b3100e26d3d83c1b20c662283c6a426ee62cb27a46b58d476eb2c87d`; its installed bytes, signature/ABI/version and retained encrypted state were verified before this source publication, microphone left off. That earlier v62 source-publication commit performed no rebuild or device run. Real Lenovo “Sarah” recognition remains imperfect and screen-off reliability unproven. Phone physical behavior on this source is unverified. No APK or private diagnostic/voice fixture is included in this review commit; source-to-exact-v62-binary reproducibility is not established by the commit.
+
+Lenovo v63 adds an A2 response screen with the existing playback-driven waveform, centered scrollable answer and compact status/Stop/Tap-to-talk/History footer. `speaking.detail` supplies the actual assistant answer before sentence-chunk audio; text reveals approximately as real playback position advances (18 characters/second across chunks), **not** word-aligned. Polling pauses the reveal; Stop/error preserves available text. New capture, local history clear, new conversation and pairing reset clear the live caption. Phone screen and recognition settings are unchanged. The focused caption JVM check passed (1/1), and Lenovo offline assembly succeeded. A broader 57-test ViewModel run had two failures, reproduced in isolation: `duplicateTapWaitsForRecorderAndLostAdmissionReconcilesReadOnly` and `leaseReleaseThenWakeListeningPreservesUncertainRequestWithoutReplay`; do not treat that run as green. The local v63 review APK was installed with matching bytes and encrypted-state metadata retained, microphone off; no APK is published here. Physical voice/visual review, exact source-to-APK reproducibility and screen-off reliability remain unproven.
+
+Historical v50 evidence remains scoped to the immutable golden tag. Its Kotlin compilation and focused JVM cases passed; a broader three-class run had 65 tests and two older `SarahViewModelTest` expectation failures. This new branch is neither v50 promotion nor exact reproduction of its APK.
+
+The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent from source control. Debug APK assembly/install requires your own separately authorized private signing setup. Published v50 uses the existing compatible signer; no new key was generated. Do not commit signing materials. Release signing is not configured here.
+
+Exact-approved local recovery uses optional `.local-review/exact-local-recovery.properties` build inputs. Missing input disables it/fails closed. No private one-off target hashes or signing inputs are supplied with this source. Do not broaden the target, clear state or replay an uncertain request to bypass this boundary.
+
+Environment-specific installed-APK instrumentation harnesses, their certificate/key containers and raw audio fixtures were excluded rather than published. The retained screenshot-policy instrumentation test is not the complete private instrumentation suite. Do not infer full device-test reproducibility or prior pass results from this snapshot.
+
+## Snapshot and dependency provenance
+
+See [SOURCE-SNAPSHOT.md](SOURCE-SNAPSHOT.md), [DEPENDENCIES.md](DEPENDENCIES.md) and [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md). Upstream dependency/license authorship is preserved; it is not personal configuration belonging to the app operator.
+
+## Licensing ambiguity retained
+
+The repository already contains an [MIT license](../LICENSE). The pre-publication Android dependency inventory separately recorded that Android source had no explicit distribution-license declaration. This snapshot does not silently resolve that pre-existing ambiguity or make a new Android-specific license grant. The owner should clarify Android licensing before downstream redistribution. Third-party license terms and attribution remain unchanged; the dependency inventory is not a transitive license clearance.

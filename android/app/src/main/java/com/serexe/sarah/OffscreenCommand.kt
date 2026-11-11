@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 /** Owned by the already-running microphone FGS; never starts a service or Activity. */
 internal class OffscreenCommand(
  private val context:Context,
- private val deadline:Long,
+ private val deadline:ListenerWindow,
  private val active:()->Boolean,
  private val stage:(String)->Unit,
  private val finished:()->Unit
@@ -21,11 +21,16 @@ internal class OffscreenCommand(
  @Volatile private var capture:Capture?=null
  @Volatile private var playback:Playback?=null
  @Volatile var cleanupComplete=true; private set
+ @Volatile private var stopped=false
+ var rearmAllowed=false; private set
  private var running=false
  private var recording:Deferred<Unit>?=null
  private var preparing:Deferred<Unit>?=null
+ private var activeBridge:Bridge?=null
+ private var activeTurn:String?=null
  private val monitor=Executors.newSingleThreadScheduledExecutor {r->Thread(r,"sarah-command-safety").apply {isDaemon=true}}
- private fun eligible()=active() && SystemClock.elapsedRealtime()<deadline && AudioEligibility.allowed(context,true) && NotificationAvailability.allowed(context)
+ // One monotonic command window covers capture, network, pending native prepare and playback.
+ private fun eligible()=active() && deadline.valid(SystemClock.elapsedRealtime()) && AudioEligibility.allowed(context,true) && NotificationAvailability.allowed(context)
  fun start():Boolean {
   if(running || !eligible()) return false
   if(!OffscreenOwnership.acquire(this)) return false
@@ -33,7 +38,7 @@ internal class OffscreenCommand(
   val state=runCatching {Vault(context,this).load()}.getOrNull()
   if(state==null) {OffscreenOwnership.release(this);return false}
   if(!OffscreenWakePolicy.admit(active(),eligible(),AudioArbiter.idle(),
-    SystemClock.elapsedRealtime()<deadline,state.optString("phase"),
+    deadline.valid(SystemClock.elapsedRealtime()),state.optString("phase"),
     Identity.valid(state.optString("conversation")) && state.optString("origin").isNotEmpty() && state.optString("token").isNotEmpty())) {OffscreenOwnership.release(this);return false}
   running=true;cleanupComplete=false
   // No native resource exists yet. A rejected watchdog schedule must not orphan the lease.
@@ -43,20 +48,31 @@ internal class OffscreenCommand(
   }
   CommandCleanup.launchOwned(scope) {
    try {run(state)} catch (_:CancellationException) {stage("discarded")}
-   catch (_:Exception) {stage("error")}
+   catch (e:Exception) {
+    val category=when(e) {is VoiceReply.Unsupported->"protocol";is Bridge.Failure->"http";is java.net.SocketTimeoutException->"timeout";is java.io.IOException->"network";else->"interrupted"}
+    val serverError=(e as? Bridge.Failure)?.let {RequestDiagnostics.serverError(it.reason)} ?: "none"
+    state.put("phase","uncertain").put("requestFailure",category).put("requestHttp",(e as? Bridge.Failure)?.status ?: 0).put("requestServerError",serverError).put("status","Background command interrupted ($category${(e as? Bridge.Failure)?.let {" · HTTP ${it.status} · $serverError"} ?: ""}). Check existing request; never resend.${if(e is VoiceReply.Unsupported) " Configure a voice-only ACP bridge." else ""}")
+    runCatching {Vault(context,this).save(state)};stage("uncertain")
+   }
    finally {
     monitor.shutdownNow();capture?.discard()
+    if(state.optString("phase")!="done") withContext(NonCancellable+Dispatchers.IO) {
+     activeTurn?.let {turn->runCatching {activeBridge?.cancel(turn)}}
+    }
     // Cancellation is not cleanup acknowledgment. Keep service/lease until native release returns.
     val clean=CommandCleanup.await(recording,{capture?.releaseComplete ?: true},
      playback?.stopAcknowledgement() ?: java.util.concurrent.CompletableFuture.completedFuture(true),preparing=preparing)
-    if(clean) {capture=null;recording=null;playback=null;running=false;cleanupComplete=true;OffscreenOwnership.release(this@OffscreenCommand);finished()}
+    if(clean) {
+     rearmAllowed=!stopped && eligible() && OffscreenWakePolicy.resolved(state.optString("phase"))
+     capture=null;recording=null;playback=null;running=false;cleanupComplete=true;OffscreenOwnership.release(this@OffscreenCommand);finished()
+    }
     else stage("cleanup-failed")
    }
   }
   return true
  }
- fun stop() { scope.cancel();capture?.discard();playback?.stop() }
- private suspend fun run(state:JSONObject) {
+ fun stop() { stopped=true;scope.cancel();capture?.discard();playback?.stop() }
+ private suspend fun run(state:JSONObject,clarification:Boolean=false,parent:String?=null) {
   if(!eligible()) return
   val vault=Vault(context,this)
   val c=Capture(context,{scope.launch {stage("interrupted");stop()} },true)
@@ -70,9 +86,10 @@ internal class OffscreenCommand(
   // Capture remains bounded even if Activity vanishes or screen turns off.
   // Native endpoint uses recorded activity and within-command pauses; cap discards.
   // Capture's independent 30-second PCM/clock cap discards an unended command.
-  try {withTimeout(31_000L) {job.await()}}
+  try {withTimeout(if(clarification) 9_000L else 31_000L) {job.await()}}
   catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture endpoint failed")}
   c.stop()
+  val responseTiming=ResponseTiming()
   check(c.releaseComplete) {"capture release failed"}
   if(!eligible() || c.capped || !c.endpointReached || !c.speechDetected) {stage("discarded");return}
   val wav=try {c.finish()} catch (_:Exception) {stage("discarded");return}
@@ -81,24 +98,54 @@ internal class OffscreenCommand(
   val conversation=state.getString("conversation")
   val request=Identity.new()
   // Persist request identity and uncertain outcome before network bytes leave process.
-  state.put("request",request).put("turn","").put("phase","uncertain")
+  state.put("request",request).put("turn","").put("phase","uncertain").put("requestPhase","submit").put("requestHttp",0).put("requestFailure","none").put("requestServerError","none").put("audioNext",0).put("chunkInFlight",false)
    .put("fingerprint",MessageDigest.getInstance("SHA-256").digest(wav).joinToString("") {"%02x".format(it)})
   vault.save(state)
   if(!eligible()) return
   val bridge=Bridge(state.getString("origin"),state.getString("token"),state.optString("ca","").takeIf {it.isNotEmpty()}?.let {android.util.Base64.decode(it,android.util.Base64.DEFAULT)})
+  activeBridge=bridge
   stage("uploading")
   if(!eligible()) return
-  val turn=bridge.submitCancellable(conversation,request,wav)
+  responseTiming.mark("upload_start_ms")
+  val turn=bridge.submitCancellable(conversation,request,wav,if(clarification) parent ?: error("Clarification owner lost") else null)
+  activeTurn=turn
+  responseTiming.mark("upload_ack_ms")
   if(!eligible()) return
-  state.put("turn",turn);vault.save(state);stage("polling")
-  var delayMs=1500L
-  repeat(30) {
+  state.put("turn",turn).put("requestPhase","poll");vault.save(state);stage("polling")
+  val deadline=System.nanoTime()+136_000_000_000L
+  var nextChunk=state.optInt("audioNext",0)
+  repeat(140) { attempt ->
+   if(System.nanoTime()>=deadline) {stage("uncertain");return}
+   ResultPolling.awaitSlot()
    if(!eligible()) return
-   val row=bridge.pollCancellable(turn)
+   val row=VoiceReply.read(bridge.pollCancellable(turn,nextChunk))
    if(!eligible()) return
    if(row.optString("id")!=turn || row.optString("conversation")!=conversation) {stage("uncertain");return}
+   val chunks=row.optJSONObject("audio_chunks")
+   if(chunks!=null && row.optString("state")=="speaking") {
+    val count=chunks.optInt("count",-1);check(count in nextChunk..32)
+    if(nextChunk<count) {
+     ResultPolling.awaitSlot();if(!eligible()) return
+     val bytes=bridge.audioCancellable(turn,nextChunk)
+     if(!eligible()) return
+     val done=CompletableDeferred<Boolean>()
+     val p=Playback(context) {done.complete(it)}
+     p.eligibility={scope.isActive && eligible()};playback=p
+     state.put("chunkInFlight",true).put("requestPhase","playback").put("status","Playback interrupted; completion unknown. Check existing request; never resend.");vault.save(state)
+     val prepare=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {p.play(bytes)}
+     preparing=prepare;prepare.start();prepare.await()
+     currentCoroutineContext().ensureActive();if(!eligible()) return
+     stage("speaking")
+     if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
+     nextChunk++
+     state.put("audioNext",nextChunk).put("chunkInFlight",false);vault.save(state)
+     return@repeat
+    }
+   }
    when(row.optString("state")) {
     "done" -> {
+     responseTiming.mark("done_observed_ms")
+     state.put("responseTimings",responseTiming.snapshot(row.optJSONObject("timings")))
      // Same encrypted local conversation, no notification text or logs.
      val transcript=row.optString("transcript").take(8000)
      val detail=row.optString("detail").take(8000)
@@ -113,6 +160,7 @@ internal class OffscreenCommand(
      state.put("messages",kept).put("phase","done");vault.save(state)
      if(row.optBoolean("audio") && eligible()) {
       val bytes=bridge.audioCancellable(turn)
+      responseTiming.mark("audio_downloaded_ms")
       if(!eligible()) return
       val done=CompletableDeferred<Boolean>()
       val p=Playback(context) {done.complete(it)}
@@ -120,20 +168,34 @@ internal class OffscreenCommand(
       playback=p
       currentCoroutineContext().ensureActive()
       // Native prepare may block; never run it on the service/main dispatcher.
+      state.put("chunkInFlight",true).put("requestPhase","playback").put("status","Playback interrupted; completion unknown. Check existing request; never resend.");vault.save(state)
       val prepare=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {p.play(bytes)}
       preparing=prepare;prepare.start();prepare.await()
+      responseTiming.mark("playback_prepared_ms")
+      if(eligible()) {state.put("responseTimings",responseTiming.snapshot(row.optJSONObject("timings")));vault.save(state)}
       currentCoroutineContext().ensureActive()
       if(!eligible()) return
       stage("speaking")
-      if(!withTimeout((deadline-SystemClock.elapsedRealtime()).coerceAtLeast(1L)) {done.await()}) {stage("interrupted");return}
+      // Preserve a per-command playback cap even when listener opt-in has no expiry.
+      if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
+      state.put("chunkInFlight",false).put("status","Reply finished");vault.save(state)
      }
-     stage("done");return
+     stage("done")
+     if(BuildConfig.CLARIFICATION_FOLLOWUP && !clarification && (nextChunk>0 || row.optBoolean("audio")) &&
+      ClarificationReply.valid(row,conversation,turn,request,state.optString("request")) &&
+      !stopped && eligible() && (playback?.stopAndAwait() ?: true) && AudioArbiter.idle() && eligible()) {
+      // Reuse exact surviving FGS/lease and original bounded command deadline.
+      // No old request replay. Followup records a fresh WAV and request in same conversation.
+      playback=null
+      run(state,clarification=true,parent=turn)
+     }
+     return
     }
     "error","cancelled","uncertain" -> {state.put("phase",row.optString("state"));vault.save(state);stage(row.optString("state"));return}
     "transcribing","thinking","speaking" -> stage("polling")
     else -> {stage("uncertain");return}
    }
-   delay(delayMs);delayMs=minOf(delayMs+500,5000)
+   delay(ResultPolling.delayMs(attempt+1))
   }
   stage("uncertain")
  }

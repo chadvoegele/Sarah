@@ -1,58 +1,58 @@
-# Sarah
+# Sarah: Android speech interface to your ACP agent
 
-Android voice assistant and Python HTTP/TLS speech bridge to an ACP agent. Local Whisper transcribes voice; the agent owns conversation context, model configuration, skills and tools; local Kokoro/FFmpeg supplies optional MP3 replies.
+Sarah relays speech to a generic Agent Client Protocol (ACP v1) agent. The agent owns reasoning, model choice, context, skills, tools and action authorization. Sarah does not interpret commands or execute actions on the phone or bridge.
 
 ```text
-Android → HTTPS Sarah bridge → local Whisper → ACP Unix socket/stdio agent
-        ← text + MP3         ← local Kokoro ← assistant text
+Android wake word + microphone
+             |
+             v
+Authenticated HTTPS bridge -> local Whisper -> generic ACP agent
+             ^                                      |
+             |                                      v
+Android playback <- local Kokoro + FFmpeg <- assistant text
 ```
 
-- `android/`: Kotlin/Compose app, imported from [serexe/sarah-android](https://github.com/serexe/sarah-android) at `e29456bc59fe26ecd482c434141f41433d2e8a90`.
-- `server/`: speech bridge, derived from [serexe/sarah-r1](https://github.com/serexe/sarah-r1) at `9794c41b201cc97001e575cb28a72b54489148bb`.
-- Original MIT copyrights/licenses and third-party notices remain in each subtree. Historical Android checksum/release records apply to their named upstream artifacts.
+The product includes wake/capture, local STT, ACP conversation, local TTS, playback, text/history, pairing, diagnostics and safe recovery. There is no direct model backend, required Hermes installation, bridge tool schema/dispatcher, integration confirmation, research/mail integration, local clock answer, schedule/timer execution or media-command execution. Requests such as “what time is it?” and “play music” are ordinary agent prompts. Agent text is not an action receipt or an instruction for Android execution.
 
-The supported product is Android + speech server + ACP client. The inherited Qt/QML/Ubuntu Touch client, power helper, native packaging, direct OpenAI-compatible model client and bridge-owned integration confirmation flow have been removed. This source change does not deploy a service or publish an APK.
+## Source layout
 
-## Setup
+- `android/`: Android voice client, wake/capture, playback, captions/history and pairing. See its dependency/model notices before redistribution.
+- `bridge/`: HTTP/authentication, durable turn ownership, generic ACP socket/stdio, Whisper and warm Kokoro speech pipeline.
+- `tests/`: synthetic peers, HTTP/security, session/cancel/restart, sentence audio and speech process ownership tests. No real providers or device required.
+- `Dockerfile`, `docker-entrypoint.sh`, `compose.example.yaml`, `config/`: reviewable bridge packaging and private-provisioning/proxy examples, not a deployment.
+- `docs/`: configuration, protocol, recovery and verification.
 
-Use Python 3.12 and a dedicated unprivileged account. From `server/`:
+The root `bridge/` layout is retained from `serexe/sarah-r1` at `fa993b1`. Generic ACP transport and container/proxy support are adapted from the earlier fork's `server/` implementation. Native Ubuntu Touch app, power helper and packaging have been removed. Upstream `LICENSE` and copyright notices are preserved.
+
+## Configure, do not guess
+
+Set `SARAH_ACP_CWD` and **exactly one** of `SARAH_ACP_SOCKET` or `SARAH_ACP_COMMAND` (a JSON argv array). No endpoint, agent, provider, profile or model is selected from spoken text. See [configuration](docs/CONFIGURATION.md) and [setup](docs/SETUP.md).
+
+Every HTTP endpoint requires a provisioned per-device bearer token over HTTPS. Direct HTTP is available only with explicit `--http` and a literal loopback bind behind a trusted TLS proxy. The token is provisioned locally from an existing private file; it is never accepted in URLs or command-line arguments, printed, implicitly rotated or un-revoked.
+
+A healthy response indicates configuration, not a live agent/provider or speech-asset probe. Missing agent transport or local assets fails the request; there is no cloud speech/model fallback.
+
+## Conversation and recovery boundary
+
+Create a **new conversation** when switching from any incompatible old bridge/backend. Existing history and audit tables stay intact and readable; no automatic import, database rewrite, session replacement or prompt replay is performed. A new additive conversation boundary and backend identity prevent reuse of legacy sessions, including sessions from the earlier generic fork.
+
+Each device/conversation is durably bound to one agent session before its first prompt. A completed session can be loaded after bridge restart if the agent supports `session/load`. A transport error, timeout, crash or cancellation during an agent turn makes its outcome uncertain. Sarah never retries or replaces that session. Reconcile actions with the agent, then explicitly create a new conversation if necessary. Stopping playback does not undo agent actions.
+
+See [ACP and HTTP contract](docs/ACP.md), [architecture](docs/ARCHITECTURE.md) and [security](SECURITY.md).
+
+## Synthetic verification
 
 ```sh
-uv venv --python 3.12
-uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
-export SARAH_ACP_CWD=/absolute/agent/working/directory
-export SARAH_ACP_SOCKET=/run/pi-acp/acp.sock
-# ACP is the only backend; SARAH_BACKEND=acp remains accepted.
-
-# Supply an existing private 40–256 character device key file. Never commit it.
-umask 077
-.venv/bin/python -m bridge.provision_device --db .state/state.db \
-  --device android --token-file /absolute/private/path/sarah-api-key
-
-# Supply private TLS material whose SAN matches the bridge hostname.
-.venv/bin/python -m bridge.server --db .state/state.db \
-  --cert /absolute/private/path/server.pem --key /absolute/private/path/server.key \
-  --bind 127.0.0.1 --port 8787
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+sh -n docker-entrypoint.sh
 ```
 
-Provision local speech assets explicitly; runtime never downloads or uses cloud speech. See the [server README](server/README.md) for setup and configuration. A JSON argv `SARAH_ACP_COMMAND` can replace the socket transport. Agent credentials and permissions belong to the agent.
+Tests use disposable Unix/loopback peers, synthetic WAV/MP3 bytes, temporary state and owned synthetic subprocesses. They do not establish real audio quality, wake-word accuracy, Android permission/background behavior, live agent compatibility or deployment correctness. See [verification](docs/VERIFICATION.md).
 
-The default listener is loopback. For phone access, configure deliberate routing, firewall and hostname-valid TLS. [Docker and reverse proxy setup](server/README.md#docker-and-tls-proxy) retains the existing image/entrypoint, API-key file provisioning and explicit loopback HTTP behind nginx. Android uses an HTTPS origin and the same revocable device Bearer token, with an optional explicitly imported private CA. [Android build prerequisites](android/README.md) include an external pinned AAR and private review signing configuration.
+## Publication and licenses
 
-## Compatibility and recovery
+`PUBLICATION-MANIFEST.txt` lists the **bridge-only source export**, not the Android APK, Android binary/model assets or a working directory. Stage exactly those files into a fresh directory and run `python tools/privacy_scan.py STAGED_DIRECTORY`. The scanner fails on unexpected files and is only a heuristic. Do not publish state, keys, recordings, diagnostics, build output or working-tree metadata.
 
-Protocol 1 basic voice remains: authenticated health, conversation creation, WAV submit, read-only request lookup, polling, audio and cancellation. Health retains `connected`, `ready`, `reason`, `protocol` and `backend=acp`. Obsolete integration capability flags and `/confirmation` are removed; updated Android has no integration approval UI. Existing protocol-1 basic voice clients do not use those fields/routes.
-
-ACP is now the default and only backend. `SARAH_BACKEND=llm` or any unsupported selection fails startup. Remove obsolete direct-model settings from private configuration and configure an ACP transport; prior direct-model conversations require an explicitly created new conversation. Existing ACP session bindings and device keys remain valid. There is no destructive database migration or automatic key rotation; old integration tables remain inert.
-
-Session identity is persisted before prompting, then reloaded for followups. Uncertain/interrupted outcomes never cause replay or a replacement session. Backend identity changes fail closed. Cancellation cannot undo agent actions. ACP agents retain their own privileges; Sarah denies client permission/delegated filesystem/terminal requests, which is not an agent sandbox. See [protocol and security](server/README.md#protocol-and-security).
-
-## Validation
-
-From `server/` with test dependencies installed:
-
-```sh
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
-```
-
-Tests use synthetic Unix/stdio/HTTP peers and disposable children. [Verification](server/README.md#verification-and-publication) describes publication checks and their limits. Fresh device, live model/tool, speech-asset and deployment proof are separate from these offline checks.
+`LICENSE` is the upstream MIT license, copyright 2026 serexe. Dependency, speech/wake model, codec and Android SDK/runtime rights are separate; see [third-party notices](THIRD-PARTY-NOTICES.md) and [license status](LICENSE-STATUS.md). This source change does not authorize deployment, device installation or release.

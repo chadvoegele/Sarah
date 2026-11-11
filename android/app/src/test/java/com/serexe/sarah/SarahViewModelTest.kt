@@ -6,6 +6,11 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
+import java.io.EOFException
+import java.net.ConnectException
+import java.net.ProtocolException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
 
 /** Exercises production SarahViewModel, not unused TurnState. No Android device/network. */
@@ -20,24 +25,35 @@ class SarahViewModelTest {
   override fun reset() {value=JSONObject()}
  }
  private class Wire:BridgePort {
-  var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0;var polls=0
-  var creates=0;var cancels=0
+  var reports=0;var reportFailure:Exception?=null;var lastReport:JSONObject?=null
+  override fun sendDiagnostics(payload:JSONObject):String {reports++;lastReport=payload;reportFailure?.let {throw it};return "ABCDEF012345ABCDEF012345"}
+  var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0
+  var childPosts=0;var childConversation:String?=null;var childParent:String?=null
+  var creates=0;var cancels=0;var lookupFailure:Exception?=null
   var onSubmit:(()->Unit)?=null
   var onAudio:(()->Unit)?=null
+  val chunks=mutableListOf<Int>();var chunkMode=false
   var row=JSONObject().put("id","t1").put("conversation","c1").put("state","done").put("detail","reply").put("audio",false)
   override fun health():JSONObject {failure?.let {throw it};return JSONObject().put("protocol",1).put("ready",healthy)}
   override fun create():String {creates++;return "c1"}
   override fun submit(conversation:String,request:String,wav:ByteArray):String {posts++;onSubmit?.invoke();return "t1"}
-  override fun lookup(request:String):JSONObject {lookups++;return row}
-  override fun poll(turn:String):JSONObject {polls++;return row}
+  override fun submitClarification(conversation:String,request:String,wav:ByteArray,parent:String):String {
+   childPosts++;childConversation=conversation;childParent=parent
+   row.put("id","t2").put("reply_expected",false).put("audio",false)
+   return "t2"
+  }
+  override fun lookup(request:String):JSONObject {lookups++;lookupFailure?.let {throw it};return row}
+  override fun poll(turn:String)=row
+  override fun pollChunks(turn:String,after:Int):JSONObject {if(chunkMode && after==2) row.put("state","done");return row}
+  override fun audioChunk(turn:String,seq:Int):ByteArray {chunks.add(seq);return byteArrayOf(1)}
   override fun cancel(turn:String):JSONObject {cancels++;return row}
   override fun audio(turn:String):ByteArray {onAudio?.invoke();return byteArrayOf(1)}
  }
  private class Mic:AudioCapture {
   val end=CompletableDeferred<Unit>();var stopped=false;var joined=false;var discarded=false;var finished=0;var permissionRevoked=false
-  var stopCompletes=false;override var speechDetected=true;override var endpointReached=false
+  var stopCompletes=false;var releaseGate:CompletableDeferred<Unit>?=null;override var speechDetected=true;override var endpointReached=false
   override val capped=false
-  override suspend fun record() {end.await();joined=true}
+  override suspend fun record() {try {end.await()} finally {withContext(NonCancellable) {releaseGate?.await();joined=true}}}
   override fun stop() {stopped=true;if(stopCompletes) end.complete(Unit)}
   override fun finish():ByteArray {check(joined);if(permissionRevoked) throw SecurityException("permission revoked");finished++;return Wav.encode(ByteArray(8000))}
   override fun discard() {discarded=true;stop();end.complete(Unit)}
@@ -46,28 +62,158 @@ class SarahViewModelTest {
  private fun persisted(phase:String="ready")=JSONObject().put("origin","https://fixture.invalid").put("token","x".repeat(48)).put("conversation","c1").put("phase",phase)
  private data class Fixture(val vm:SarahViewModel,val memory:Memory,val wire:Wire,val mic:Mic,val sound:Sound,val captureStarts:()->Int,val rearms:()->Int)
  private fun fixture(initial:JSONObject=persisted(),eligible:(Boolean)->Boolean={true},beforePlayback:suspend ()->Unit={},
-  guardedStore:Boolean=false,loadFailure:Exception?=null):Fixture {
+  guardedStore:Boolean=false,loadFailure:Exception?=null,abort:()->Unit={}):Fixture {
   val memory=Memory(initial,guardedStore,loadFailure);val wire=Wire();val mic=Mic();lateinit var sound:Sound;var starts=0;var rearms=0
-  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++})
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},abort,awaitPollSlot={})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
  }
- @Test fun removedServerStatesStayUncertainWithoutApprovalOrPollingLoop() {
-  for(stage in listOf("confirming","acting","unknown")) {
-   val f=fixture(persisted("uncertain").put("request","request-1").put("turn","t1"))
-   f.wire.row.put("state",stage).put("confirmation",JSONObject().put("conversation","c1").put("nonce","old"))
-   f.vm.onForeground();f.vm.checkExisting()
-   assertEquals("uncertain",f.vm.ui.value.phase)
-   assertEquals(1,f.wire.lookups);assertEquals(0,f.wire.polls)
-   assertEquals(0,f.wire.posts);assertEquals(0,f.wire.cancels)
-   assertFalse(f.vm.ui.value.canCapture)
+ @Test fun legacyTimerReceiptNeverResolvesUncertaintyOrReplays() {
+  for(phase in listOf("done","uncertain","acting","confirming")) {
+   val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1").put("audioNext",2).put("chunkInFlight",true))
+   f.vm.onForeground()
+   f.wire.row.put("state",phase).put("phone_action",JSONObject().put("conversation","c1").put("turn","t1")
+    .put("command",JSONObject().put("action","create").put("kind","timer"))
+    .put("receipt",JSONObject().put("status","scheduled")))
+    .put("timings",JSONObject().put("route","direct_timer"))
+   f.vm.checkExisting()
+   assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+   assertEquals("r1",f.memory.value.getString("request"));assertEquals("t1",f.memory.value.getString("turn"))
+   assertEquals(2,f.memory.value.getInt("audioNext"));assertTrue(f.memory.value.getBoolean("chunkInFlight"))
+   assertEquals(1,f.wire.lookups);assertEquals(0,f.wire.posts);assertEquals(0,f.wire.creates)
+   assertEquals(0,f.wire.cancels);assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty())
    f.vm.onBackground()
   }
  }
- @Test fun historicalConfirmationStateRestoresAsUncertain() {
-  val f=fixture(persisted("confirming").put("request","request-1").put("turn","t1"))
-  assertEquals("uncertain",f.vm.ui.value.phase)
-  assertEquals("uncertain",f.memory.value.getString("phase"))
-  assertEquals(0,f.wire.posts);assertEquals(0,f.wire.lookups)
+ @Test fun rejectedSubmissionIsDurableAndMissingLookupNeverClearsOrReplaysIt()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.onSubmit={throw Bridge.Failure(403,"not_found")}
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(1,f.wire.posts);assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+  assertEquals("submit",f.memory.value.getString("requestPhase"));assertEquals(403,f.memory.value.getInt("requestHttp"));assertEquals("not_found",f.memory.value.getString("requestServerError"))
+  assertTrue(f.vm.ui.value.status.contains("Saved identity not found for this device"));assertFalse(f.vm.ui.value.status.contains("Authentication"))
+  val request=f.memory.value.getString("request");val conversation=f.memory.value.getString("conversation")
+  f.vm.onBackground();val restored=fixture(f.memory.value);restored.vm.onForeground()
+  restored.wire.lookupFailure=Bridge.Failure(403,"not_found");restored.vm.checkExisting()
+  assertEquals(1,restored.wire.lookups);assertEquals("uncertain",restored.vm.ui.value.phase);assertFalse(restored.vm.ui.value.canCapture)
+  assertEquals(request,restored.memory.value.getString("request"));assertEquals(conversation,restored.memory.value.getString("conversation"));assertEquals("",restored.memory.value.getString("turn"))
+  assertEquals(0,restored.wire.posts);assertEquals(0,restored.wire.creates);assertEquals(0,restored.wire.cancels);assertTrue(restored.wire.chunks.isEmpty());assertEquals(0,restored.sound.played)
+  restored.vm.onBackground()
+ }
+ @Test fun sendDiagnosticsExplicitOnlyAndNoRecoveryMutation() {
+  for(failure in listOf(null,Bridge.Failure(403,"private-token"),Bridge.Failure(404,"raw-url"),Bridge.Failure(429,"raw-body"))) {
+   val f=fixture(persisted("uncertain").put("request","abc").put("turn","raw-turn").put("requestServerError","not_found").put("requestHttp",403).put("audioNext",2).put("chunkInFlight",true).put("responseTimings",JSONObject().put("secret","private-timing")))
+   val before=f.memory.value.toString();val writes=f.memory.writes;val ui=f.vm.ui.value
+   val text=f.vm.shareDiagnostics(41)
+   for(secret in listOf("raw-turn","fixture.invalid","x".repeat(48),"private-timing","responseTimings")) assertFalse(text.contains(secret))
+   assertTrue(text.contains("ba7816bf8f01"));assertEquals(0,f.wire.reports)
+   f.wire.reportFailure=failure;f.vm.sendDiagnostics(41)
+   assertEquals(1,f.wire.reports);assertEquals(before,f.memory.value.toString());assertEquals(writes,f.memory.writes);assertEquals(ui,f.vm.ui.value)
+   if(failure==null) assertTrue(f.vm.diagnosticDelivery.value.contains("ABCDEF012345ABCDEF012345")) else assertTrue(f.vm.diagnosticDelivery.value.contains("Share diagnostics"))
+   assertFalse(f.vm.diagnosticDelivery.value.contains("private-token"));assertEquals(0,f.wire.posts);assertEquals(0,f.wire.lookups);assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.creates);assertTrue(f.wire.chunks.isEmpty());assertEquals(0,f.sound.played)
+   f.vm.onBackground()
+  }
+ }
+ @Test fun statusDiagnosticCodesPersistAndRemainBlockedWithoutReplay() {
+  for((raw,expected) in listOf("unauthorized" to "unauthorized","not_found" to "not_found","invalid_identifier" to "invalid_identifier","private-body-token" to "other")) {
+   val f=fixture(persisted("uncertain").put("request","saved-private-request").put("turn","saved-private-turn").put("audioNext",2).put("chunkInFlight",true))
+   f.vm.onForeground();assertEquals(0,f.wire.lookups)
+   f.wire.lookupFailure=Bridge.Failure(403,raw);f.vm.checkExisting()
+   assertEquals(1,f.wire.lookups);assertEquals(expected,f.memory.value.getString("requestServerError"))
+   assertTrue(f.vm.ui.value.status.contains("HTTP 403 · $expected"));assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+   assertEquals(2,f.memory.value.getInt("audioNext"));assertTrue(f.memory.value.getBoolean("chunkInFlight"))
+   val snapshot=f.vm.diagnosticSnapshot(40)
+   assertTrue(snapshot.contains("requestServerError=$expected"));assertFalse(snapshot.contains("saved-private-request"));assertFalse(snapshot.contains("saved-private-turn"));assertFalse(snapshot.contains("private-body-token"))
+   f.vm.clearLocal();f.vm.onBackground();val restored=fixture(f.memory.value);restored.vm.onForeground()
+   assertTrue(restored.vm.ui.value.status.contains("HTTP 403 · $expected"));assertTrue(restored.vm.diagnosticSnapshot(40).contains("requestServerError=$expected"))
+   assertEquals(0,restored.wire.lookups);assertEquals(0,f.wire.posts);assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.creates);assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty())
+   restored.vm.onBackground()
+  }
+ }
+ @Test fun captureDiagnosticsIsLocalOnlyAndMasksAllSavedIdentities() {
+  val f=fixture(persisted("uncertain").put("request","abc").put("turn","").put("conversation","private-conversation").put("token","private-token").put("requestServerError","injected-body").put("messages",org.json.JSONArray().put(JSONObject().put("who","YOU").put("text","private-transcript"))))
+  val before=f.memory.value.toString();val writes=f.memory.writes
+  val snapshot=f.vm.diagnosticSnapshot(40)
+  assertTrue(snapshot.contains("savedRequest present=true length=3 sha256=ba7816bf8f01"));assertTrue(snapshot.contains("savedTurn present=true length=0 sha256=e3b0c44298fc"));assertTrue(snapshot.contains("savedConversation present=true length=20 sha256="));assertTrue(snapshot.contains("requestServerError=other"))
+  for(secret in listOf("private-conversation","private-token","fixture.invalid","private-transcript","injected-body")) assertFalse(snapshot.contains(secret))
+  assertEquals(before,f.memory.value.toString());assertEquals(writes,f.memory.writes);assertEquals(0,f.wire.lookups);assertEquals(0,f.wire.posts);assertEquals(0,f.wire.creates);assertEquals(0,f.wire.cancels);assertEquals(0,f.sound.played)
+  f.vm.onBackground()
+ }
+ @Test fun uncertainStatusWorksWhileIdleWakeListenerWouldOtherwiseSilentlyBlockIt() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.vm.onForeground()
+  try {
+   HeySarahListenerService.status.value="Wake listening"
+   f.wire.row.put("state","error").put("detail","Voice request failed (TimeoutError).")
+   f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals("ready",f.vm.ui.value.phase)
+   assertEquals(0,f.wire.posts);assertEquals(0,f.sound.played)
+  } finally {HeySarahListenerService.status.value="off";f.vm.onBackground()}
+ }
+ @Test fun persistedTerminalErrorAfterClearHistoryAndRecreateRecoversWithoutReplay() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1").put("audioNext",1).put("chunkInFlight",true))
+  f.vm.onForeground();f.vm.clearLocal()
+  val recreated=fixture(f.memory.value)
+  recreated.wire.row.put("state","error").put("detail","Voice request failed (TimeoutError). Any dispatched action outcome may be unknown; no automatic retry.")
+  recreated.vm.onForeground();recreated.vm.checkExisting()
+  assertEquals("ready",recreated.vm.ui.value.phase);assertTrue(recreated.vm.ui.value.canCapture)
+  assertTrue(recreated.vm.ui.value.status.contains("Request failed"));assertTrue(recreated.vm.ui.value.status.contains("TimeoutError"))
+  assertEquals(1,recreated.vm.ui.value.transcript.size);assertEquals(0,recreated.memory.value.optInt("audioNext"));assertFalse(recreated.memory.value.optBoolean("chunkInFlight"))
+  assertEquals(1,recreated.wire.lookups);assertEquals(0,recreated.wire.posts);assertEquals(0,recreated.wire.cancels);assertEquals(0,recreated.sound.played);recreated.vm.onBackground();f.vm.onBackground()
+ }
+ @Test fun statusHttpErrorVisibleAndDurableWithoutPrivateBodyOrReplay() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.vm.onForeground()
+  f.wire.lookupFailure=Bridge.Failure(429,"private-response-token");f.vm.checkExisting()
+  assertEquals("uncertain",f.vm.ui.value.phase);assertTrue(f.vm.ui.value.status.contains("HTTP 429"));assertFalse(f.vm.ui.value.status.contains("private-response-token"));assertFalse(f.vm.ui.value.canCapture)
+  f.vm.clearLocal();val recreated=fixture(f.memory.value);assertTrue(recreated.vm.ui.value.status.contains("HTTP 429"))
+  assertEquals(0,f.wire.posts);assertEquals(0,f.sound.played);recreated.vm.onBackground();f.vm.onBackground()
+ }
+ @Test fun interruptedOffscreenChunkHandoffNeverAcknowledgesOrReplaysUnknown() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1").put("audioNext",1).put("chunkInFlight",true))
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2));f.vm.onForeground();f.vm.checkExisting()
+  assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture);assertEquals(1,f.memory.value.optInt("audioNext"));assertTrue(f.memory.value.optBoolean("chunkInFlight"));assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty());assertEquals(0,f.wire.posts)
+  f.wire.row.put("state","cancelled");f.vm.cancelTurn();assertEquals(1,f.wire.cancels);assertEquals(0,f.sound.played);f.vm.onBackground()
+ }
+ @Test fun statusLookupDoneWithAudioNeverDownloadsOrPlays() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.wire.row.put("audio",true)
+  f.wire.onAudio={fail("Recovery must not fetch audio")};f.vm.onForeground();f.vm.checkExisting()
+  assertEquals("ready",f.vm.ui.value.phase);assertEquals(0,f.sound.played);assertEquals(0,f.wire.posts);f.vm.onBackground()
+ }
+ @Test fun sentenceChunksPlaySequentiallyAndOnlyRearmAfterLastAcknowledgement()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.chunkMode=true
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2).put("complete",true))
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(listOf(0),f.wire.chunks);assertEquals("playing",f.vm.ui.value.phase)
+  assertFalse(f.vm.ui.value.canCapture);f.sound.finish();delay(30)
+  assertEquals(listOf(0,1),f.wire.chunks);assertEquals("playing",f.vm.ui.value.phase)
+  f.sound.finish();delay(30);assertEquals("done",f.vm.ui.value.phase)
+  assertEquals(2,f.sound.played);f.vm.onBackground()
+ }
+ @Test fun a2CaptionUsesActualAssistantDetailBeforeChunkPlaybackNotUserOrProgress()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.row.put("state","speaking").put("detail","Actual fixture answer.")
+   .put("transcript","User fixture request.").put("audio_chunks",JSONObject().put("count",1))
+  f.vm.onForeground();f.vm.startCapture();assertNull(f.vm.ui.value.responseText)
+  f.mic.end.complete(Unit);delay(30)
+  assertEquals("playing",f.vm.ui.value.phase)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  assertFalse(f.vm.ui.value.responseText!!.contains("User fixture"))
+  f.wire.row.put("state","done").remove("audio_chunks")
+  f.sound.finish();delay(30)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  f.vm.clearLocal()
+  assertNull(f.vm.ui.value.responseText)
+  assertTrue(f.vm.ui.value.transcript.isEmpty())
+  f.vm.onBackground()
+ }
+ @Test fun stopDuringFirstChunkCancelsServerAndNeverPlaysQueuedChunk()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2))
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(listOf(0),f.wire.chunks)
+  f.wire.row.put("state","cancelled");f.vm.stopAudio();f.vm.stopAudio();f.sound.finish();delay(30)
+  assertEquals("cancelled",f.vm.ui.value.phase);assertEquals(1,f.wire.cancels)
+  assertEquals(listOf(0),f.wire.chunks);assertEquals(1,f.sound.played)
+  assertFalse(f.memory.value.optBoolean("chunkInFlight"));assertTrue(f.vm.ui.value.canCapture)
+  f.vm.onBackground();val followup=fixture(f.memory.value);followup.vm.onForeground();followup.mic.endpointReached=true;followup.vm.startCapture();followup.mic.end.complete(Unit);delay(30)
+  assertEquals(1,followup.wire.posts);assertEquals("done",followup.vm.ui.value.phase);assertEquals(0,followup.sound.played);followup.vm.onBackground()
  }
  @Test fun localSnapshotUsesRealLeaseReleaseAndHealthStateWithoutSensitiveFields() {
   val secret="dangerous-private-text"
@@ -98,6 +244,26 @@ class SarahViewModelTest {
    assertTrue(redacted.contains("listener=other"))
    assertFalse(redacted.contains(secret))
   } finally {HeySarahListenerService.status.value="off"}
+ }
+ @Test fun healthFailureCauseIsFixedCategoryAndNeverLeaksThrowableText() {
+  val f=fixture();f.vm.onForeground()
+  val secret="private-host-token-response"
+  for ((failure,category) in listOf(
+   UnknownHostException(secret) to "dns",
+   ConnectException(secret) to "connect",
+   SocketTimeoutException(secret) to "timeout",
+   EOFException(secret) to "eof",
+   ProtocolException(secret) to "protocol",
+   SSLHandshakeException(secret) to "tls",
+   IOException(secret) to "network")) {
+   f.wire.failure=failure;f.vm.reconnect()
+   val snapshot=f.vm.diagnosticSnapshot(29)
+   assertTrue(snapshot,snapshot.contains("health=failed"))
+   assertTrue(snapshot,snapshot.contains("lastHealthFailure=$category"))
+   assertFalse(snapshot,snapshot.contains(secret))
+   assertFalse(f.vm.ui.value.canCapture)
+   assertEquals(0,f.wire.posts)
+  }
  }
  @Test fun newActivityWhileOffscreenOwnsVaultDefersLoadAndRestoresReplyAfterRelease() {
   val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
@@ -150,6 +316,91 @@ class SarahViewModelTest {
    assertTrue(f.vm.ui.value.canCapture)
    assertEquals(0,f.wire.posts)
   } finally {OffscreenOwnership.release(owner);HeySarahListenerService.status.value="off"}
+ }
+ @Test fun leaseReleaseThenWakeListeningRestoresResolvedResultButBlocksManualCapture() {
+  val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
+  HeySarahListenerService.status.value="speaking"
+  val f=fixture(guardedStore=true)
+  try {
+   f.vm.onForeground()
+   assertEquals("Finishing background command",f.vm.ui.value.status)
+   OffscreenOwnership.guarded(owner) {f.memory.value=persisted("done").put("messages",org.json.JSONArray().put(JSONObject().put("who","S.A.R.A.H").put("text","reply")))}
+   OffscreenOwnership.release(owner)
+   assertEquals("Finishing background command",f.vm.ui.value.status)
+   HeySarahListenerService.status.value="Wake listening" // Real completion order, never off.
+   assertEquals("done",f.vm.ui.value.phase)
+   assertEquals("c1",f.vm.ui.value.conversation)
+   assertEquals(listOf("S.A.R.A.H" to "reply"),f.vm.ui.value.transcript)
+   assertFalse(f.vm.ui.value.canCapture)
+   f.vm.startCapture();f.vm.send()
+   assertEquals(0,f.captureStarts());assertEquals(0,f.wire.posts)
+   assertEquals(0,f.memory.writes);assertEquals(0,f.rearms())
+   HeySarahListenerService.status.value="off"
+   assertTrue(f.vm.ui.value.canCapture) // Off still performs authenticated recovery.
+   assertEquals(0,f.wire.posts)
+  } finally {f.vm.onBackground();OffscreenOwnership.release(owner);HeySarahListenerService.status.value="off"}
+ }
+ @Test fun leaseReleaseThenWakeListeningReconcilesOnlyTerminalReceiptWithoutReplay() {
+  for(receipt in listOf("done","uncertain")) {
+   val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
+   HeySarahListenerService.status.value="uploading"
+   val f=fixture(guardedStore=true);val request=Identity.new()
+   f.wire.row.put("state",receipt)
+   try {
+    f.vm.onForeground()
+    OffscreenOwnership.guarded(owner) {f.memory.value=persisted("uncertain").put("request",request).put("turn","")}
+    OffscreenOwnership.release(owner);HeySarahListenerService.status.value="Wake listening"
+    assertEquals("uncertain",f.vm.ui.value.phase)
+    assertTrue(f.vm.ui.value.status.contains("never resend"))
+    assertFalse(f.vm.ui.value.canCapture)
+    f.vm.startCapture();f.vm.send()
+    assertEquals(0,f.captureStarts());assertEquals(0,f.wire.lookups)
+    f.vm.checkExisting();f.vm.reconnect()
+    val phase=if(receipt=="done") "ready" else "uncertain"
+    assertEquals(request,f.memory.value.getString("request"))
+    assertEquals("c1",f.memory.value.getString("conversation"))
+    assertEquals(phase,f.memory.value.getString("phase"))
+    assertEquals(1,f.wire.lookups);assertTrue(f.memory.writes>0)
+    f.vm.startCapture();f.vm.send()
+    assertEquals(0,f.captureStarts());assertEquals(0,f.wire.posts)
+    assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty())
+    assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.creates);assertEquals(0,f.rearms())
+    HeySarahListenerService.status.value="off"
+    assertEquals(phase,f.vm.ui.value.phase);assertEquals(receipt=="done",f.vm.ui.value.canCapture)
+    assertEquals(request,f.memory.value.getString("request"));assertEquals(1,f.wire.lookups)
+   } finally {f.vm.onBackground();OffscreenOwnership.release(owner);HeySarahListenerService.status.value="off"}
+  }
+ }
+ @Test fun leaseReleaseThenWakeListeningWhileBackgroundedRestoresOnResume() {
+  val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
+  HeySarahListenerService.status.value="speaking"
+  val f=fixture(guardedStore=true)
+  try {
+   f.vm.onForeground();f.vm.onBackground()
+   OffscreenOwnership.guarded(owner) {f.memory.value=persisted("done")}
+   OffscreenOwnership.release(owner);HeySarahListenerService.status.value="Wake listening"
+   assertNull(f.vm.ui.value.conversation)
+   f.vm.onForeground()
+   assertEquals("done",f.vm.ui.value.phase);assertEquals("c1",f.vm.ui.value.conversation)
+   assertFalse(f.vm.ui.value.canCapture);f.vm.startCapture()
+   assertEquals(0,f.captureStarts());assertEquals(0,f.wire.posts)
+  } finally {f.vm.onBackground();OffscreenOwnership.release(owner);HeySarahListenerService.status.value="off"}
+ }
+ @Test fun wakeListeningBeforeLeaseReleaseStillWaitsForRealOwnershipRelease() {
+  val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
+  HeySarahListenerService.status.value="speaking"
+  val f=fixture(guardedStore=true)
+  try {
+   f.vm.onForeground()
+   OffscreenOwnership.guarded(owner) {f.memory.value=persisted("done")}
+   HeySarahListenerService.status.value="Wake listening"
+   assertEquals("Finishing background command",f.vm.ui.value.status)
+   assertNull(f.vm.ui.value.conversation);assertFalse(f.vm.ui.value.canCapture)
+   OffscreenOwnership.release(owner)
+   assertEquals("done",f.vm.ui.value.phase);assertEquals("c1",f.vm.ui.value.conversation)
+   assertFalse(f.vm.ui.value.canCapture);f.vm.startCapture()
+   assertEquals(0,f.captureStarts());assertEquals(0,f.wire.posts)
+  } finally {f.vm.onBackground();OffscreenOwnership.release(owner);HeySarahListenerService.status.value="off"}
  }
  @Test fun leaseReleaseThenListenerOffWhileBackgroundedRecoversOnResume() {
   val owner=Any();assertTrue(OffscreenOwnership.acquire(owner))
@@ -237,6 +488,190 @@ class SarahViewModelTest {
   assertEquals(0,f.memory.writes)
   assertEquals(0,f.wire.posts)
  }
+ @Test fun visibleLiveServiceHandoffCompletesRepeatedResolvedCommandsWithoutColdRestart()=runBlocking {
+  val started=10_000L;var now=started;var restarts=0;var stops=0
+  for(phase in listOf("done","error","cancelled","done")) {
+   val f=fixture();f.mic.endpointReached=true;f.wire.row.put("state",phase)
+   f.vm.onForeground();HeySarahListenerService.status.value="released"
+   var resolved=false;var current=true
+   val completion=ServiceCommandCompletion({AudioArbiter.idle() && f.mic.joined},
+    {ServiceRearmPolicy.allowed(current,false,false,started,now,true,true,resolved)},
+    {restarts++;true},{stops++})
+   val handoff=VisibleCommandHandoff({current},{resolved=it;completion.complete()})
+   try {
+    assertTrue(f.vm.acceptWake(handoff));assertFalse(f.vm.acceptWake(handoff))
+    f.mic.end.complete(Unit);delay(30)
+    assertEquals(phase,f.vm.ui.value.phase);assertEquals(1,f.wire.posts)
+    assertFalse(handoff.owned());assertEquals(0,f.rearms()) // not legacy startForegroundService port
+    handoff.complete(true);assertEquals(0,stops)
+    now+=1000
+   } finally {current=false;f.vm.onBackground();HeySarahListenerService.status.value="off"}
+  }
+  assertEquals(4,restarts);assertEquals(0,stops)
+ }
+ @Test fun resumedActivityAcceptsExactServiceCapabilityAndReturnsAfterSpokenReply()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true)
+  f.vm.onForeground();HeySarahListenerService.status.value="Wake listening"
+  f.vm.onForeground();assertFalse(f.vm.ui.value.canCapture)
+  HeySarahListenerService.status.value="released"
+  var returned=0;var resolved=false;var live=true
+  val handoff=VisibleCommandHandoff({live},{resolved=it;returned++})
+  try {
+   assertTrue(f.vm.acceptWake(handoff));assertFalse(f.vm.acceptWake(handoff))
+   f.mic.end.complete(Unit);delay(50)
+   assertEquals(1,f.wire.posts);assertEquals("playing",f.vm.ui.value.phase)
+   assertEquals(0,returned)
+   f.sound.finish();assertEquals(1,returned);assertTrue(resolved)
+   assertEquals(0,f.rearms());assertEquals("done",f.vm.ui.value.phase)
+  } finally {live=false;f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun visibleHandoffWaitsForPlaybackAndStopCleanupAndNeverReplaysUnknown()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true);f.vm.onForeground()
+  var completed=0;var resolved=false
+  val handoff=VisibleCommandHandoff({true},{completed++;resolved=it})
+  HeySarahListenerService.status.value="released"
+  try {
+   assertTrue(f.vm.acceptWake(handoff));f.mic.end.complete(Unit);delay(30)
+   assertEquals("playing",f.vm.ui.value.phase);assertEquals(0,completed)
+   f.sound.finish();assertEquals(1,completed);assertTrue(resolved)
+   f.sound.finish();assertEquals(1,completed)
+  } finally {f.vm.onBackground();HeySarahListenerService.status.value="off"}
+  var stopWindow:()->Unit={}
+  val unknown=fixture(abort={stopWindow()});unknown.mic.endpointReached=true;unknown.vm.onForeground()
+  var valid=true;var recovery: Boolean?=null
+  val uncertain=VisibleCommandHandoff({valid},{recovery=it})
+  stopWindow={valid=false;uncertain.stop()}
+  unknown.wire.onSubmit={throw java.net.SocketTimeoutException("private")}
+  HeySarahListenerService.status.value="released"
+  try {
+   assertTrue(unknown.vm.acceptWake(uncertain));unknown.mic.end.complete(Unit);delay(30)
+   assertEquals("uncertain",unknown.vm.ui.value.phase);assertEquals(false,recovery)
+   val request=unknown.memory.value.getString("request")
+   HeySarahListenerService.status.value="off";unknown.vm.checkExisting()
+   assertEquals(1,unknown.wire.lookups);assertEquals(1,unknown.wire.posts)
+   assertEquals(request,unknown.memory.value.getString("request"));assertEquals(0,unknown.rearms())
+  } finally {valid=false;unknown.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun explicitClarificationReopensOnlyAfterSpeechAndStopInvalidatesIt()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  var valid=true;var completed=0;var resolved=true;var serviceStops=0
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},abortWindow={serviceStops++;valid=false},awaitPollSlot={})
+  wire.row.put("audio",true).put("reply_expected",true)
+  val handoff=VisibleCommandHandoff({valid},{completed++;resolved=it})
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50)
+   assertEquals("playing",vm.ui.value.phase);assertEquals(1,mics.size)
+   sound.finish();delay(30)
+   if(!BuildConfig.CLARIFICATION_FOLLOWUP) {
+    assertEquals(1,mics.size);assertEquals("done",vm.ui.value.phase)
+    assertEquals(1,completed);assertEquals(0,wire.childPosts);return@runBlocking
+   }
+   assertEquals(2,mics.size);assertEquals("recording",vm.ui.value.phase)
+   assertTrue(vm.ui.value.status.startsWith("Listening for your answer"))
+   assertEquals(0,completed);assertEquals(1,wire.posts)
+   valid=false;handoff.stop();delay(50)
+   assertTrue(serviceStops>0)
+   assertTrue(mics[1].discarded);assertEquals(1,completed);assertFalse(resolved)
+   mics[1].end.complete(Unit);delay(20)
+   assertEquals(1,wire.posts);assertEquals(0,wire.childPosts)
+  } finally {valid=false;vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun spokenFollowupKeepsServiceOwnerAndSubmitsOneBoundChild()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  var serviceStops=0;var valid=true;var completed=0
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},abortWindow={serviceStops++;valid=false},awaitPollSlot={})
+  val handoff=VisibleCommandHandoff({valid},{completed++})
+  wire.row.put("audio",true).put("reply_expected",true)
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50)
+   assertEquals("playing",vm.ui.value.phase);assertEquals(1,mics.size)
+   sound.finish();delay(30)
+   if(!BuildConfig.CLARIFICATION_FOLLOWUP) {
+    assertEquals(1,mics.size);assertEquals("done",vm.ui.value.phase)
+    assertEquals(1,completed);assertEquals(0,wire.childPosts);return@runBlocking
+   }
+   assertEquals("recording",vm.ui.value.phase);assertEquals(2,mics.size)
+   assertEquals(0,serviceStops);assertTrue(handoff.owned());assertEquals(0,completed)
+   mics[1].end.complete(Unit);delay(50)
+   assertEquals(0,serviceStops);assertEquals(1,wire.posts);assertEquals(1,wire.childPosts)
+   assertEquals("c1",wire.childConversation);assertEquals("t1",wire.childParent)
+   assertEquals("c1",memory.value.getString("conversation"));assertEquals("t2",memory.value.getString("turn"))
+   assertEquals(1,completed);assertEquals("done",vm.ui.value.phase)
+   sound.finish();delay(20);assertEquals(1,wire.childPosts);assertEquals(2,mics.size)
+  } finally {valid=false;vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun ordinaryReplyMarkerFalseDoesNotReopenAfterSpeech()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true).put("reply_expected",false)
+  var completed=0;val handoff=VisibleCommandHandoff({true},{completed++})
+  try {
+   f.vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(f.vm.acceptWake(handoff));f.mic.end.complete(Unit);delay(50)
+   f.sound.finish();delay(30)
+   assertEquals(1,f.captureStarts());assertEquals(1,completed);assertEquals(1,f.wire.posts)
+  } finally {f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun clarificationSilenceExpiresWithoutReplyOrReplay()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},awaitPollSlot={})
+  wire.row.put("audio",true).put("reply_expected",true)
+  var completed=0;val handoff=VisibleCommandHandoff({true},{completed++})
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50);sound.finish();delay(30)
+   if(!BuildConfig.CLARIFICATION_FOLLOWUP) {
+    assertEquals(1,mics.size);assertEquals("done",vm.ui.value.phase)
+    assertEquals(1,completed);assertEquals(0,wire.childPosts);return@runBlocking
+   }
+   assertEquals(2,mics.size);assertEquals(0,completed)
+   withTimeout(11_000) {while(completed==0) delay(100)}
+   assertTrue(mics[1].joined);assertTrue(mics[1].discarded)
+   assertEquals(1,wire.posts);assertEquals(1,completed)
+  } finally {vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun visibleStopInvalidatesOwnerAndWaitsForCaptureFinally()=runBlocking {
+  val f=fixture();f.vm.onForeground();var valid=true;var completed=0
+  val released=CompletableDeferred<Unit>();f.mic.releaseGate=released
+  val handoff=VisibleCommandHandoff({valid},{assertFalse(it);assertTrue(f.mic.joined);completed++})
+  HeySarahListenerService.status.value="released"
+  try {
+   assertTrue(f.vm.acceptWake(handoff));valid=false;handoff.stop();delay(30)
+   assertTrue(f.mic.discarded);assertEquals(0,completed);assertEquals(0,f.wire.posts)
+   assertEquals("ready",f.vm.ui.value.phase)
+   released.complete(Unit);delay(30);assertEquals(1,completed)
+   f.mic.end.complete(Unit);assertEquals(0,f.rearms());handoff.complete(true);assertEquals(1,completed)
+  } finally {released.complete(Unit);f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun visibleServerCancelUsesSingleCancelAndCompletesResolvedHandoff()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("state","thinking");f.vm.onForeground()
+  var completed=0;var resolved=false
+  val handoff=VisibleCommandHandoff({true},{completed++;resolved=it})
+  HeySarahListenerService.status.value="released"
+  try {
+   assertTrue(f.vm.acceptWake(handoff));f.mic.end.complete(Unit);delay(30)
+   assertEquals("polling",f.vm.ui.value.phase);assertEquals(0,completed)
+   f.wire.row.put("state","cancelled");f.vm.cancelTurn();delay(30)
+   assertEquals("cancelled",f.vm.ui.value.phase);assertEquals(1,f.wire.cancels)
+   assertEquals(1,f.wire.posts);assertEquals(1,completed);assertTrue(resolved)
+  } finally {f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun visibleKnownErrorAndCancellationReturnToListener()=runBlocking {
+  for(phase in listOf("error","cancelled")) {
+   val f=fixture();f.mic.endpointReached=true;f.wire.row.put("state",phase)
+   f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(30)
+   assertEquals(phase,f.vm.ui.value.phase);assertEquals(1,f.wire.posts)
+   assertEquals("resolved $phase must rearm",1,f.rearms())
+  }
+ }
  @Test fun wakeEndpointSubmitsOnceAndRearmsOnlyAfterTextReply()=runBlocking {
   val f=fixture();f.mic.endpointReached=true;f.vm.onForeground()
   assertTrue(f.vm.acceptWake());assertFalse(f.vm.acceptWake());assertEquals("recording",f.vm.ui.value.phase)
@@ -282,6 +717,51 @@ class SarahViewModelTest {
   f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(150)
   assertEquals("uncertain",f.vm.ui.value.phase);assertEquals(0,f.rearms());assertEquals(1,f.wire.posts)
   f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals(0,f.rearms());assertEquals(1,f.wire.posts)
+ }
+ @Test fun actionAndApprovalEnvelopesFailClosedBeforeAudioCaptionOrRearm()=runBlocking {
+  for(key in listOf("phone_action","confirmation")) {
+   for(wake in listOf(false,true)) {
+    val f=fixture();f.mic.endpointReached=true
+    f.wire.row.put(key,JSONObject().put("conversation","c1").put("turn","t1")
+     .put("command",JSONObject().put("action","play").put("kind","media")))
+     .put("state","done").put("audio",true).put("reply_expected",true).put("detail","must not render")
+     .put("audio_chunks",JSONObject().put("count",1))
+    f.vm.onForeground()
+    if(wake) assertTrue(f.vm.acceptWake()) else f.vm.startCapture()
+    f.mic.end.complete(Unit);delay(50)
+    assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+    assertEquals(1,f.wire.posts);assertEquals(1,f.captureStarts());assertEquals(0,f.rearms())
+    assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty());assertNull(f.vm.ui.value.responseText)
+    assertFalse(f.memory.value.has("phoneActionKey"));assertFalse(f.memory.value.has("phoneActionReceipt"))
+    assertEquals(0,f.wire.creates);assertEquals(0,f.wire.cancels)
+    f.vm.startCapture();assertEquals(1,f.captureStarts());assertEquals(1,f.wire.posts)
+    f.vm.onBackground()
+   }
+  }
+ }
+ @Test fun legacyActionPhasesRestoreBlockedWithoutNewConversationOrReplay() {
+  for(phase in listOf("acting","confirming")) {
+   val f=fixture(persisted(phase).put("request","r1").put("turn","t1"))
+   f.vm.onForeground();f.vm.startCapture()
+   assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+   assertEquals(0,f.wire.posts);assertEquals(0,f.wire.creates);assertEquals(0,f.wire.lookups)
+   assertEquals("r1",f.memory.value.getString("request"));assertEquals("c1",f.memory.value.getString("conversation"))
+   f.vm.onBackground()
+  }
+ }
+ @Test fun timedOutProductionPostPreservesRequestAndNoReplay()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.onSubmit={throw java.net.SocketTimeoutException("private backend secret")}
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(50)
+  assertEquals("uncertain",f.vm.ui.value.phase)
+  assertTrue(f.vm.ui.value.status.contains("Network timeout"))
+  assertFalse(f.vm.ui.value.status.contains("private backend secret"))
+  val request=f.memory.value.getString("request")
+  f.vm.reconnect();assertEquals("uncertain",f.vm.ui.value.phase)
+  assertTrue(f.vm.ui.value.status.contains("Check existing request"))
+  assertTrue(f.vm.ui.value.status.contains("never resend"))
+  assertEquals(request,f.memory.value.getString("request"))
+  f.vm.startCapture();assertEquals(1,f.wire.posts)
+  f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals(1,f.wire.posts)
  }
  @Test fun microphoneLeaseBlocksWakeHandoffUntilReleased() {
   val held=Any();assertTrue(AudioArbiter.acquire(held))
@@ -335,7 +815,9 @@ class SarahViewModelTest {
   assertEquals(1,f.wire.posts);assertEquals(1,f.mic.finished)
   assertEquals("uncertain",f.vm.ui.value.phase);assertTrue(f.memory.value.has("request"))
   f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals(1,f.wire.posts)
-  assertEquals("done",f.vm.ui.value.phase)
+  assertEquals("ready",f.vm.ui.value.phase)
+  assertTrue(f.vm.ui.value.status.contains("Audio not replayed"))
+  assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty())
  }
  @Test fun staleReplyAndBackgroundCaptureNeverSubmit() {
   val f=fixture();f.vm.onForeground();f.vm.startCapture();f.vm.onBackground()
