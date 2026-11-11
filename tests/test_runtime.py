@@ -13,6 +13,20 @@ from bridge.warm_voice import WarmVoice
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_real_audio_decoder_accepts_wav(self):
+        import wave
+        from faster_whisper.audio import decode_audio
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'synthetic.wav'
+            with wave.open(str(path), 'wb') as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16000)
+                audio.writeframes(b'\0\0' * 1600)
+            decoded = decode_audio(str(path))
+            self.assertEqual(len(decoded), 1600)
+            self.assertTrue((decoded == 0).all())
+
     def test_local_model_path_no_download_and_bounded_transcript(self):
         from types import SimpleNamespace
         adapter = VoiceRuntime()
