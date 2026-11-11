@@ -23,8 +23,8 @@ class ClarificationReplyTest {
   assertFalse(valid(row().put("id","wrong")))
   assertFalse(valid(row().put("conversation","foreign")))
   assertFalse(ClarificationReply.valid(row(),conversation,turn,request,"other"))
-  assertFalse(valid(row().put("confirmation",JSONObject().put("nonce","x"))))
-  assertFalse(valid(row().put("phone_action",JSONObject().put("action","create"))))
+  assertThrows(IllegalArgumentException::class.java) {VoiceReply.read(row().put("confirmation",JSONObject().put("nonce","x")))}
+  assertThrows(IllegalArgumentException::class.java) {VoiceReply.read(row().put("phone_action",JSONObject().put("action","create")))}
   assertTrue(valid(row().apply {remove("timings")})) // metrics may publish after terminal done
  }
 }

@@ -12,7 +12,6 @@ interface BridgePort {
  fun lookup(request:String):JSONObject
  fun poll(turn:String):JSONObject
  fun cancel(turn:String):JSONObject
- fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject
  fun audio(turn:String):ByteArray
  fun pollChunks(turn:String,after:Int):JSONObject=poll(turn)
  fun audioChunk(turn:String,seq:Int):ByteArray=throw UnsupportedOperationException()

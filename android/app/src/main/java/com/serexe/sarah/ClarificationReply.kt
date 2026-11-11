@@ -8,6 +8,5 @@ internal object ClarificationReply {
   Identity.valid(conversation) && Identity.valid(turn) && Identity.valid(request) &&
    request==savedRequest && row.optString("id")==turn && row.optString("conversation")==conversation &&
    row.optString("state")=="done" && row.has("reply_expected") &&
-   row.opt("reply_expected") is Boolean && row.getBoolean("reply_expected") && row.optJSONObject("confirmation")==null &&
-   row.optJSONObject("phone_action")==null
+   row.opt("reply_expected") is Boolean && row.getBoolean("reply_expected")
 }

@@ -1,5 +1,11 @@
 # S.A.R.A.H Android
 
+## Voice-only ACP refork
+
+This branch re-forks upstream `serexe/sarah-r1` at `fa993b1` as an Android speech interface to a generic ACP agent. Android captures speech, communicates with the authenticated HTTPS bridge, and presents assistant text/audio. The agent owns reasoning, context, tools and action authorization. There is no Android command dispatch, local clock answer, timer/alarm/schedule, media-library execution, bridge-integration approval, direct model backend or Hermes dependency. See [the voice-only contract and validation limits](VOICE-ONLY-ACP.md).
+
+Phone/Lenovo wake detection, opt-in, capture, waveform/caption, sentence playback, encrypted pairing, history, diagnostics and read-only uncertain-request recovery remain. This source change performs no install, deployment, key creation/rotation or database migration. The historical upstream evidence below is not validation of this refork.
+
 Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared source descends from **[Android golden v50](../SARAH_BASELINE.md)** reconstructed development source. Golden v50 tag and approved APK remain unchanged; **exact v50 source-to-APK reproducibility is unproven**; see [v50 provenance and proof limits](GOLDEN50-SOURCE.md). The repository's existing `app/` remains the separate Ubuntu Touch client.
 
 ## Included source
@@ -8,7 +14,7 @@ Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This shared s
 - Android assistant-role entry points and an explicitly enabled foreground-microphone service for local wake detection (“Hey Sarah” on phone; experimental “Nova” on Lenovo).
 - Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-Current shared source has two **debug/local-review** variants. Both retain `com.serexe.sarah`, minSdk 26, targetSdk 35 and Keystore-backed pairing; they are alternative upgrades, not side-by-side installations. Phone: `phoneDebug`, ARM64 (`arm64-v8a`), `0.1.53-phone-review` / versionCode 53, retaining “Hey Sarah”, `HEY_SARAH` and threshold 0.25. Lenovo: `lenovoDebug`, ARMv7 (`armeabi-v7a`), `0.1.67-lenovo-nova-wake-review` / versionCode 67, using experimental “Nova”, exact `NOVA` result and threshold 0.24. Lenovo v66 introduced a per-recorder noise-suppression trial for wake listening and command/follow-up capture; v67 keeps it and changes only the Lenovo wake phrase/model keyword. The phone variant does not enable that suppression trial. These source variants are review candidates, not golden releases or published APKs. Installing the lower-version phone build over Lenovo 67 would be a downgrade; do not switch variants without planning a higher version. Earlier v50 includes local schedules, phone media and timer countdown/Cancel/Stop UI; compatible backend routes are not part of this Android source. [Wake-word testing and customization](WAKE-WORD-TESTING.md) explains what can be changed and what still needs physical validation.
+Current shared source has two **debug/local-review** variants. Both retain `com.serexe.sarah`, minSdk 26, targetSdk 35 and Keystore-backed pairing; they are alternative upgrades, not side-by-side installations. Phone: `phoneDebug`, ARM64 (`arm64-v8a`), `0.1.53-phone-review` / versionCode 53, retaining “Hey Sarah”, `HEY_SARAH` and threshold 0.25. Lenovo: `lenovoDebug`, ARMv7 (`armeabi-v7a`), `0.1.67-lenovo-nova-wake-review` / versionCode 67, using experimental “Nova”, exact `NOVA` result and threshold 0.24. Lenovo v66 introduced a per-recorder noise-suppression trial for wake listening and command/follow-up capture; v67 keeps it and changes only the Lenovo wake phrase/model keyword. The phone variant does not enable that suppression trial. These source variants are review candidates, not golden releases or published APKs. Installing the lower-version phone build over Lenovo 67 would be a downgrade; do not switch variants without planning a higher version. Historical v50 included local schedules, phone media and timer countdown/Cancel/Stop UI; those features, permissions, services, receivers and tests are removed from this refork. [Wake-word testing and customization](WAKE-WORD-TESTING.md) explains what can be changed and what still needs physical validation.
 
 ## Privacy and setup
 
@@ -25,11 +31,19 @@ Use JDK 17 and Android SDK platform/build-tools 35. Configure `ANDROID_HOME` for
 From this directory, build and run focused JVM checks separately:
 
 ```sh
-./gradlew --no-daemon :app:testPhoneDebugUnitTest --tests 'com.serexe.sarah.LegacyWakeEligibilityTest' --tests 'com.serexe.sarah.WakePhraseTest' :app:testLenovoDebugUnitTest --tests 'com.serexe.sarah.LegacyWakeEligibilityTest' --tests 'com.serexe.sarah.WakePhraseTest' --tests 'com.serexe.sarah.WakeCaptureDiagnosticsTest' --tests 'com.serexe.sarah.WakeReadinessBoundaryTest' --tests 'com.serexe.sarah.ServiceCommandRearmTest' --tests 'com.serexe.sarah.ListenerModelWarmupTest' --tests 'com.serexe.sarah.SarahViewModelTest'
+./gradlew --no-daemon :app:testPhoneDebugUnitTest :app:testLenovoDebugUnitTest
 ./gradlew --no-daemon :app:assemblePhoneDebug :app:assembleLenovoDebug
 # Outputs: app/build/outputs/apk/phone/debug/app-phone-debug.apk
 #          app/build/outputs/apk/lenovo/debug/app-lenovo-debug.apk
 ```
+
+A JDK-free source-contract audit can also run from the repository root:
+
+```sh
+python -m unittest discover -s android/tests -v
+```
+
+The refork environment had no Java executable/JAVA_HOME or detected Android SDK. Both JVM and assembly commands stopped at Gradle wrapper startup; no test compilation or APK result is claimed. The source audit passed 5 checks. Physical microphone/wake/playback, instrumentation and live ACP/provider testing were not run. Previously documented upstream JVM failures below remain unverified, not silently reclassified as passing.
 
 Keep these APKs separate. The selected ABI must have five native libraries in the final APK: `libandroidx.graphics.path.so`, `libonnxruntime.so`, `libsherpa-onnx-c-api.so`, `libsherpa-onnx-cxx-api.so` and `libsherpa-onnx-jni.so`. Check final APK contents, `aapt` metadata and `apksigner` before using any artifact. Do not use Gradle's aggregate `assembleDebug` as a substitute for explicit lane selection.
 

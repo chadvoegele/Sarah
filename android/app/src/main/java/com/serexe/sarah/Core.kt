@@ -28,7 +28,7 @@ class TurnState {
  fun ambiguous(c:String,r:String) { if (conversation==c && request==r) phase="uncertain" }
  fun lookupRequest():String?=if (phase=="uncertain") request else null
  fun accept(c:String,r:String,next:String):Boolean {
-  if (c!=conversation || r!=request || next !in setOf("transcribing","thinking","confirming","acting","speaking","done","error","cancelled","uncertain")) return false
+  if (c!=conversation || r!=request || next !in setOf("transcribing","thinking","speaking","done","error","cancelled","uncertain")) return false
   phase=next;return true
  }
  fun newConversation(c:String) { require(Identity.valid(c));conversation=c;request=null;phase="ready" }

@@ -1,5 +1,7 @@
 # Direct dependency record (not a license clearance)
 
+The voice-only ACP refork adds no runtime dependencies and removes local schedule/media integrations without removing any required third-party license or model notices. Existing sherpa-onnx, ONNX Runtime, AndroidX, OkHttp and Kotlin payloads/notices remain. No provider SDK or ACP SDK is bundled: Android speaks the generic HTTPS voice protocol.
+
 Recorded from local Gradle declarations; versions/claims below require upstream license and transitive review before redistribution. Screenshot regression adds Android instrumentation-test-only dependencies.
 
 | Use | Dependency | Declared version | Preliminary upstream license family |
