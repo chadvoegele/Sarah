@@ -43,7 +43,7 @@ A JDK-free source-contract audit can also run from the repository root:
 python -m unittest discover -s android/tests -v
 ```
 
-The refork environment had no Java executable/JAVA_HOME or detected Android SDK. Both JVM and assembly commands stopped at Gradle wrapper startup; no test compilation or APK result is claimed. The source audit passed 5 checks. Physical microphone/wake/playback, instrumentation and live ACP/provider testing were not run. Previously documented upstream JVM failures below remain unverified, not silently reclassified as passing.
+Combined integration validation used user-authorized JDK 17/SDK 35 installation: both debug JVM suites passed, **245 tests each, 0 failures/errors/skips**. Initial six phone/three Lenovo failures reproduced on untouched upstream were remediated; see [exact evidence](../docs/VERIFICATION.md). Both debug assemblies are blocked only by absent private `android/.local-review/review.jks`; no key was generated or retrieved. Both unsigned release assemblies succeeded using `./gradlew --no-daemon :app:assemblePhoneRelease :app:assembleLenovoRelease`, with package/ABI/native-library checks. These unsigned artifacts are not a signed release or device validation. Five source audits also pass. No physical microphone/wake/playback, instrumentation, live ACP/provider request or install was performed.
 
 Keep these APKs separate. The selected ABI must have five native libraries in the final APK: `libandroidx.graphics.path.so`, `libonnxruntime.so`, `libsherpa-onnx-c-api.so`, `libsherpa-onnx-cxx-api.so` and `libsherpa-onnx-jni.so`. Check final APK contents, `aapt` metadata and `apksigner` before using any artifact. Do not use Gradle's aggregate `assembleDebug` as a substitute for explicit lane selection.
 

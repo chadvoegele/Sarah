@@ -44,17 +44,33 @@ The combined branch merges bridge `88caf08` and Android `8f1ed68` from the ances
 
 On the integration host, a disposable Python 3.14 environment was created with `uv venv /tmp/sarah-integration-venv` and declared requirements installed using `uv pip install --python /tmp/sarah-integration-venv/bin/python -r requirements.txt -r requirements-dev.txt`. `/tmp/sarah-integration-venv/bin/python -m pytest -q` passed **137 tests and 124 subtests**. That includes five Android source audits, not Kotlin execution. The exact bridge-only manifest was staged into a fresh `/tmp/sarah-integration-export.*` directory: its suite passed **132 tests and 86 subtests**, and `python tools/privacy_scan.py STAGED_DIRECTORY` reported **0 findings** (heuristic only). `python -m compileall -q bridge tests tools`, `sh -n docker-entrypoint.sh` and `git diff --check` also passed.
 
-Independent cross-contract tests exercise WAV -> stub STT -> real disposable Unix ACP peer -> stub TTS -> sentence MP3 polling/download/ACK; exact session reload for a fresh ordinary follow-up; Stop during the agent versus Stop during speech; permission/delegated-dispatch refusal; deadline uncertainty; read-only lookup and no prompt replay. Shared `tests/fixtures/voice-relay.json` envelopes are asserted against HTTP responses and loaded by Android's `VoiceReplyTest`. The follow-up HTTP test checks fresh keys without the bridge-rejected legacy clarification header. The new Kotlin tests are source only until the following build blocker is resolved.
+Independent cross-contract tests exercise WAV -> stub STT -> real disposable Unix ACP peer -> stub TTS -> sentence MP3 polling/download/ACK; exact session reload for a fresh ordinary follow-up; Stop during the agent versus Stop during speech; permission/delegated-dispatch refusal; deadline uncertainty; read-only lookup and no prompt replay. Shared `tests/fixtures/voice-relay.json` envelopes are asserted against HTTP responses and loaded by Android's `VoiceReplyTest`. The follow-up HTTP test checks fresh keys without the bridge-rejected legacy clarification header. The shared-envelope and follow-up Kotlin tests also passed in both variants during the JVM run below.
 
-Both commands were attempted from `android/`:
+The environment initially lacked Java/SDK. After explicit user authorization, the coordinator installed Temurin JDK 17.0.21 and the integration agent installed public Android command-line tools, platform 35 and build-tools 35.0.0. The command-line ZIP matched its official repository SHA-1 inventory. Tools/cache were moved out of ephemeral local storage into `$HOME/tmp`; no sudo, secrets, signing keys or device access were used.
+
+From `android/`:
 
 ```sh
-./gradlew --no-daemon :app:testPhoneDebugUnitTest :app:testLenovoDebugUnitTest
-./gradlew --no-daemon :app:assemblePhoneDebug :app:assembleLenovoDebug
+export JAVA_HOME="$HOME/tmp/temurin-17"
+export ANDROID_HOME="$HOME/tmp/android-sdk"
+export GRADLE_USER_HOME="$HOME/tmp/sarah-gradle"
+export PATH="$JAVA_HOME/bin:$PATH"
+./gradlew --no-daemon --continue :app:testPhoneDebugUnitTest :app:testLenovoDebugUnitTest
+./gradlew --no-daemon --continue :app:assemblePhoneDebug :app:assembleLenovoDebug
+./gradlew --no-daemon :app:assemblePhoneRelease :app:assembleLenovoRelease
 ```
 
-Both stopped before Gradle/compilation: `JAVA_HOME is not set and no 'java' command could be found in your PATH`. Java, javac, Kotlin, Gradle and sdkmanager were absent from PATH; JDK/SDK checks under `/usr/lib`, `/usr/local`, `/opt`, `/mnt`, `~/Android` and `~/.gradle` found no usable toolchain. `adb` alone is not a build toolchain. JAVA_HOME/ANDROID_HOME/ANDROID_SDK_ROOT were unset. No signing material was read, created or retrieved. No Kotlin/JVM result or APK is claimed. Historical upstream JVM failures remain unverified rather than counted as passing.
+JVM result: **245 tests per variant, 490 total; 0 failures/errors/skips**. Both production and test Kotlin compiled. The first combined run had six phone and three Lenovo failures; all nine were independently reproduced from untouched upstream `fa993b1` exported to a disposable directory (250 tests per upstream variant). Review removed an invalid offscreen follow-up stage label that production validation rejected. Two stale tests now assert the existing read-only recovery contract: a matching terminal receipt resolves to ready without audio/replay; an uncertain receipt remains blocked. Three follow-up tests now assert disabled behavior on phone and exercise the full enabled path on Lenovo, rather than expecting Lenovo-only behavior on both. No tests were skipped or deleted to hide these failures.
+
+Both debug assemblies reached signing validation but failed because the existing private `.local-review/review.jks` is absent. No replacement signing key was generated or retrieved. Both **unsigned release assemblies succeeded**, including vital lint. APK inspection verified package `com.serexe.sarah`, minSdk 26/targetSdk 35, version codes 53/67, the sole intended ARM64/ARMv7 ABI respectively, and all five required native libraries. `apksigner verify` rejected both as unsigned, as expected; these are build-validation artifacts, not installable signed releases or a source-reproducibility claim.
+
+| Unsigned output under `android/app/build/outputs/apk/` | SHA-256 |
+| --- | --- |
+| `phone/release/app-phone-release-unsigned.apk` | `689902e6bf1d5003dde428cb498e085dd80a5fa26385cf1208fdbf4b285d086d` |
+| `lenovo/release/app-lenovo-release-unsigned.apk` | `27f74c7c6bb268faa3f3dcfe095a7c2b140e5a284cec7dac82efac06fe87f1fb` |
+
+Synthetic test reports, build logs and unsigned APKs are retained privately outside the disposable worktree. No APK is committed or published.
 
 ## Separate authorization required
 
-Not performed: Docker image build/model downloads, container/service deployment, certificate/proxy reachability, real ACP/provider requests, Android install, physical wake/capture/playback, instrumentation/background/permission/OEM validation, key creation/rotation or production database changes. Run those only under an explicit live-validation plan. Android compilation remains a tooling blocker, not physical validation and not a source-audit pass.
+Not performed: Docker image build/model downloads, container/service deployment, certificate/proxy reachability, real ACP/provider requests, Android install, physical wake/capture/playback, instrumentation/background/permission/OEM validation, key creation/rotation or production database changes. Run those only under an explicit live-validation plan. Signed debug assembly remains blocked on the operator's existing private keystore. Passing JVM tests and unsigned builds do not establish physical voice behavior.

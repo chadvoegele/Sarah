@@ -186,7 +186,7 @@ internal class OffscreenCommand(
       !stopped && eligible() && (playback?.stopAndAwait() ?: true) && AudioArbiter.idle() && eligible()) {
       // Reuse exact surviving FGS/lease and original bounded command deadline.
       // No old request replay. Followup records a fresh WAV and request in same conversation.
-      playback=null;stage("Listening for your answer")
+      playback=null
       run(state,clarification=true,parent=turn)
      }
      return
