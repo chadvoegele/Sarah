@@ -55,10 +55,10 @@ class Reports:
         with self.connect() as db:
             row=db.execute('SELECT created,payload FROM reports WHERE owner=? AND code=? AND created>=?',(owner,code,int(time.time())-7*86400)).fetchone()
         return None if row is None else {'receipt':code,'createdUtcEpoch':row[0],'report':json.loads(row[1])}
-def install(app,parent):
+def install(app,parent,device_key):
     reports=Reports(parent)
     async def submit(request):
-        # Existing server guard already authenticated request['device']; never request ownership lookup.
+        # Server guard provides the typed authenticated owner; never accept an owner from the report.
         if request.content_type!='application/json' or request.headers.get('Content-Encoding','identity')!='identity':return web.json_response({'error':'invalid_diagnostics'},status=400)
         if request.content_length is not None and request.content_length>8192:return web.json_response({'error':'diagnostics_too_large'},status=413)
         data=bytearray()
@@ -67,13 +67,13 @@ def install(app,parent):
             if len(data)>8192:return web.json_response({'error':'diagnostics_too_large'},status=413)
         try:
             p=json.loads(data.decode('utf8'),object_pairs_hook=unique_pairs,parse_constant=lambda _: (_ for _ in ()).throw(Invalid()))
-            code=reports.submit(request['device'],p)
+            code=reports.submit(request[device_key],p)
         except (Invalid,ValueError,TypeError,UnicodeError):return web.json_response({'error':'invalid_diagnostics'},status=400)
         except Quota:return web.json_response({'error':'diagnostic_quota'},status=429)
         except (OSError,sqlite3.Error):return web.json_response({'error':'diagnostic_unavailable'},status=503)
         return web.json_response({'receipt':code},status=201)
     async def lookup(request):
-        try:result=reports.get(request['device'],request.match_info['code'])
+        try:result=reports.get(request[device_key],request.match_info['code'])
         except (OSError,sqlite3.Error):return web.json_response({'error':'diagnostic_unavailable'},status=503)
         return web.json_response(result if result is not None else {'error':'not_found'},status=200 if result else 404)
     app.router.add_post('/v1/diagnostics',submit)

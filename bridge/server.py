@@ -14,6 +14,9 @@ from aiohttp import web
 from .core import Conflict, Denied, Store, UnconfiguredRuntime, validate_audio
 
 
+DEVICE_KEY = web.RequestKey('sarah_device', str)
+
+
 def make_app(store, adapter=None):
     adapter = adapter or UnconfiguredRuntime()
     store.db.execute('CREATE TABLE IF NOT EXISTS response_metrics(turn TEXT PRIMARY KEY, route TEXT NOT NULL, timings TEXT NOT NULL)')
@@ -38,7 +41,7 @@ def make_app(store, adapter=None):
                 response = web.json_response({'error': 'rate_limited'}, status=429)
             else:
                 bucket.append(now)
-                request['device'] = device
+                request[DEVICE_KEY] = device
                 response = await handler(request)
         except Denied as error:
             response = web.json_response({'error': str(error)}, status=403)
@@ -66,7 +69,7 @@ def make_app(store, adapter=None):
 
     async def conversation(request):
         await empty_body(request)
-        return web.json_response({'conversation': store.conversation(request['device'])}, status=201)
+        return web.json_response({'conversation': store.conversation(request[DEVICE_KEY])}, status=201)
 
     def active(device, turn):
         return store.get(device, turn)['state'] not in ('done', 'error', 'cancelled', 'uncertain')
@@ -190,7 +193,7 @@ def make_app(store, adapter=None):
             raise Denied('audio_content_type')
         if 'X-Clarification-Parent' in request.headers:
             raise Denied('clarification_extension_unsupported')
-        device = request['device']
+        device = request[DEVICE_KEY]
         conv = request.headers.get('X-Conversation', '')
         key = request.headers.get('Idempotency-Key', '')
         store.own(device, conv)
@@ -218,7 +221,7 @@ def make_app(store, adapter=None):
 
     async def poll(request):
         turn = request.match_info['turn']
-        result = result_audio(store.get(request['device'], turn))
+        result = result_audio(store.get(request[DEVICE_KEY], turn))
         stream = streams.get(turn)
         if stream is not None and result['state'] in ('speaking', 'done'):
             after = request.headers.get('X-Audio-After')
@@ -233,11 +236,11 @@ def make_app(store, adapter=None):
         return web.json_response(result)
 
     async def lookup(request):
-        return web.json_response(result_audio(store.by_request(request['device'], request.match_info['request'])))
+        return web.json_response(result_audio(store.by_request(request[DEVICE_KEY], request.match_info['request'])))
 
     async def audio(request):
         turn = request.match_info['turn']
-        row = store.get(request['device'], turn)
+        row = store.get(request[DEVICE_KEY], turn)
         path = media / f'{turn}.mp3'
         if row['state'] != 'done' or not path.is_file():
             raise Denied('not_found')
@@ -245,7 +248,7 @@ def make_app(store, adapter=None):
 
     async def chunk_audio(request):
         turn = request.match_info['turn']
-        row = store.get(request['device'], turn)
+        row = store.get(request[DEVICE_KEY], turn)
         seq, stream = request.match_info['seq'], streams.get(turn)
         if not seq.isdecimal() or len(seq) > 2 or stream is None or not 0 <= int(seq) < stream['count'] or row['state'] not in ('speaking', 'done'):
             raise Denied('not_found')
@@ -257,7 +260,7 @@ def make_app(store, adapter=None):
     async def cancel(request):
         await empty_body(request)
         turn = request.match_info['turn']
-        result = store.cancel(request['device'], turn, agent_pending=turn in reasoning)
+        result = store.cancel(request[DEVICE_KEY], turn, agent_pending=turn in reasoning)
         task = tasks.get(turn)
         if task is not None and not task.cancelling():
             task.cancel()
@@ -276,7 +279,7 @@ def make_app(store, adapter=None):
 
     app.on_cleanup.append(cleanup)
     from .diagnostics import install
-    install(app, store.path.parent)
+    install(app, store.path.parent, DEVICE_KEY)
     app.router.add_get('/v1/health', health)
     app.router.add_post('/v1/conversations', conversation)
     app.router.add_get('/v1/requests/{request}', lookup)
