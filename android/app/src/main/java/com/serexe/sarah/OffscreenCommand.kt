@@ -49,9 +49,9 @@ internal class OffscreenCommand(
   CommandCleanup.launchOwned(scope) {
    try {run(state)} catch (_:CancellationException) {stage("discarded")}
    catch (e:Exception) {
-    val category=when(e) {is Bridge.Failure->"http";is java.net.SocketTimeoutException->"timeout";is java.io.IOException->"network";else->"interrupted"}
+    val category=when(e) {is VoiceReply.Unsupported->"protocol";is Bridge.Failure->"http";is java.net.SocketTimeoutException->"timeout";is java.io.IOException->"network";else->"interrupted"}
     val serverError=(e as? Bridge.Failure)?.let {RequestDiagnostics.serverError(it.reason)} ?: "none"
-    state.put("phase","uncertain").put("requestFailure",category).put("requestHttp",(e as? Bridge.Failure)?.status ?: 0).put("requestServerError",serverError).put("status","Background command interrupted ($category${(e as? Bridge.Failure)?.let {" · HTTP ${it.status} · $serverError"} ?: ""}). Check existing request; never resend.")
+    state.put("phase","uncertain").put("requestFailure",category).put("requestHttp",(e as? Bridge.Failure)?.status ?: 0).put("requestServerError",serverError).put("status","Background command interrupted ($category${(e as? Bridge.Failure)?.let {" · HTTP ${it.status} · $serverError"} ?: ""}). Check existing request; never resend.${if(e is VoiceReply.Unsupported) " Configure a voice-only ACP bridge." else ""}")
     runCatching {Vault(context,this).save(state)};stage("uncertain")
    }
    finally {
@@ -118,19 +118,9 @@ internal class OffscreenCommand(
    if(System.nanoTime()>=deadline) {stage("uncertain");return}
    ResultPolling.awaitSlot()
    if(!eligible()) return
-   val row=bridge.pollCancellable(turn,nextChunk)
+   val row=VoiceReply.read(bridge.pollCancellable(turn,nextChunk))
    if(!eligible()) return
    if(row.optString("id")!=turn || row.optString("conversation")!=conversation) {stage("uncertain");return}
-   val action=row.optJSONObject("phone_action")
-   if(action!=null && action.optJSONObject("receipt")==null) {
-    if(action.optString("conversation")!=conversation || action.optString("turn")!=turn || row.optString("state") !in setOf("acting","speaking","done")) {stage("uncertain");return}
-    val nonce=action.optString("nonce");val key="$turn:$nonce"
-    val receipt=if(state.optString("phoneActionKey")==key) state.getJSONObject("phoneActionReceipt")
-     else withContext(Dispatchers.IO) {PhoneActionRouter.execute(context,action,conversation,turn)}.also {
-      state.put("phoneActionKey",key).put("phoneActionReceipt",it);vault.save(state)
-     }
-    bridge.phoneReceiptCancellable(turn,conversation,nonce,receipt)
-   }
    val chunks=row.optJSONObject("audio_chunks")
    if(chunks!=null && row.optString("state")=="speaking") {
     val count=chunks.optInt("count",-1);check(count in nextChunk..32)
@@ -201,9 +191,8 @@ internal class OffscreenCommand(
      }
      return
     }
-    "confirming" -> {state.put("phase","uncertain");vault.save(state);stage("confirmation-required");return}
     "error","cancelled","uncertain" -> {state.put("phase",row.optString("state"));vault.save(state);stage(row.optString("state"));return}
-    "transcribing","thinking","acting","speaking" -> stage("polling")
+    "transcribing","thinking","speaking" -> stage("polling")
     else -> {stage("uncertain");return}
    }
    delay(ResultPolling.delayMs(attempt+1))

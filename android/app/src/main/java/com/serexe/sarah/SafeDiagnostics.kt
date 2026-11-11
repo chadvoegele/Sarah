@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /** Separate strict wire/share allowlist. Never serializes the local diagnostic blob. */
 internal object SafeDiagnostics {
- val phases=setOf("disconnected","ready","done","error","cancelled","uncertain","recording","finalizing","uploading","polling","playing","reply_audio_pending","confirming","creating","cancelling","other")
+ val phases=setOf("disconnected","ready","done","error","cancelled","uncertain","recording","finalizing","uploading","polling","playing","reply_audio_pending","creating","cancelling","other")
  fun payload(state:JSONObject,phase:String,version:Long):JSONObject {
   val out=JSONObject().put("schema",1).put("appVersion",version.coerceIn(1,999999))
    .put("phase",phase.takeIf {it in phases} ?: "other")

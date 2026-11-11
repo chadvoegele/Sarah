@@ -117,14 +117,6 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
    }
   })
  }
- fun phoneReceipt(turn:String,conversation:String,nonce:String,receipt:JSONObject):JSONObject {
-  require(Identity.valid(turn) && Identity.valid(conversation) && nonce.matches(Regex("[0-9a-f]{64}")))
-  return json("/v1/turns/$turn/phone-receipt","POST",JSONObject().put("conversation",conversation).put("nonce",nonce).put("receipt",receipt).toString().toRequestBody("application/json".toMediaType()))
- }
- suspend fun phoneReceiptCancellable(turn:String,conversation:String,nonce:String,receipt:JSONObject):JSONObject {
-  require(Identity.valid(turn) && Identity.valid(conversation) && nonce.matches(Regex("[0-9a-f]{64}")))
-  return jsonCancellable("/v1/turns/$turn/phone-receipt","POST",JSONObject().put("conversation",conversation).put("nonce",nonce).put("receipt",receipt).toString().toRequestBody("application/json".toMediaType()))
- }
  override fun lookup(request:String):JSONObject { require(Identity.valid(request));return json("/v1/requests/$request") }
  override fun poll(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn") }
  override fun pollChunks(turn:String,after:Int):JSONObject {require(Identity.valid(turn) && after in 0..32);return json("/v1/turns/$turn",headers=mapOf("X-Audio-After" to after.toString()))}
@@ -136,10 +128,6 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
   }
  }
  override fun cancel(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn/cancel","POST",empty()) }
- override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {
-  require(listOf(turn,conversation,nonce,hash).all(Identity::valid))
-  return json("/v1/turns/$turn/confirmation","POST",JSONObject().put("conversation",conversation).put("nonce",nonce).put("action_hash",hash).put("accept",accept).toString().toRequestBody("application/json".toMediaType()))
- }
  override fun audio(turn:String):ByteArray {
   require(Identity.valid(turn))
   val body=call("/v1/turns/$turn/audio").second

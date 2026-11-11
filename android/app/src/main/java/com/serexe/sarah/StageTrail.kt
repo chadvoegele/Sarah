@@ -4,7 +4,7 @@ import android.content.Context
 
 /** Local, bounded diagnostic labels only. Never receives user content or exception text. */
 internal object StageTrail {
- private val labels=setOf("starting","listening","hit","released","locked","fallback","starting-command-mic","recording","recording-media-muted","discarded","interrupted","uploading","polling","speaking","done","confirmation-required","error","uncertain","cancelled","stopped","cleanup-failed")
+ private val labels=setOf("starting","listening","hit","released","locked","fallback","starting-command-mic","recording","recording-media-muted","discarded","interrupted","uploading","polling","speaking","done","error","uncertain","cancelled","stopped","cleanup-failed")
  internal fun validate(label:String) { require(label in labels) }
  @Synchronized fun write(context:Context,label:String) {
   validate(label)

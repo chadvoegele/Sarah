@@ -1,5 +1,7 @@
 # Android source snapshot
 
+**Historical upstream publication record.** The voice-only ACP refork is a later source change based on upstream `fa993b1`, not the unchanged publication described below. See [VOICE-ONLY-ACP.md](VOICE-ONLY-ACP.md) for its removals, retained voice paths and validation limits. The statements below do not establish tested-APK linkage for this refork.
+
 This is the first Git-tracked export of an untracked Android development tree. It is not reconstructed development history, a release, a verified build, or proof of a tested APK's exact source.
 
 ## Publication scope

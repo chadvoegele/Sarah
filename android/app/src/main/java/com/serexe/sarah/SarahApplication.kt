@@ -7,7 +7,6 @@ import java.io.File
 class SarahApplication:Application() {
  override fun onCreate() {
   super.onCreate();purgeLegacyReplies(cacheDir)
-  runCatching {localSchedule(this).reconcile()} // no permission => no false acceptance or dispatch
  }
 }
 

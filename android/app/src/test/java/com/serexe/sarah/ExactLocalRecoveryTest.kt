@@ -47,7 +47,6 @@ class ExactLocalRecoveryTest {
   override fun audio(turn:String):ByteArray {other++;return byteArrayOf()}
   override fun audioChunk(turn:String,seq:Int):ByteArray {other++;return byteArrayOf()}
   override fun cancel(turn:String):JSONObject {other++;return JSONObject()}
-  override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {other++;return JSONObject()}
  }
  private data class Fixture(val vm:SarahViewModel,val store:Memory,val wire:Wire,val scope:CoroutineScope)
  private fun fixture(initial:JSONObject=saved(),approval:ExactLocalRecoveryTarget=target(),port:BridgePort?=null):Fixture {
