@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Heuristic publication hygiene scan. Never prints matching sensitive values."""
 import argparse
-import hashlib
-import struct
-import zlib
 import ipaddress
 import os
 import stat
@@ -14,9 +11,10 @@ from urllib.parse import urlsplit, parse_qsl
 
 MANIFEST = 'PUBLICATION-MANIFEST.txt'
 FORBIDDEN_DIRS = {'.git', '.backups', '.state', '.build', 'evidence', 'artifacts',
-                  '__pycache__', '.pytest_cache', '.venv', '.verify', 'build', 'package'}
-FORBIDDEN_SUFFIXES = {'.pem', '.key', '.p12', '.pfx', '.db', '.sqlite', '.wav', '.mp3', '.mp4', '.png', '.jpg', '.click', '.log', '.pyc'}
-PUBLIC_HOSTS = {'chatgpt.com', 'gateway.maton.ai', 'www.w3.org', 'docs.aiohttp.org', 'docs.pytest.org'}
+                  '__pycache__', '.pytest_cache', '.venv', '.verify', 'build', 'package', 'secrets'}
+FORBIDDEN_SUFFIXES = {'.pem', '.key', '.p12', '.pfx', '.db', '.sqlite', '.wav', '.mp3', '.mp4', '.png', '.jpg', '.click', '.log', '.pyc', '.token'}
+# GitHub hosts the explicitly pinned Docker speech dependencies.
+PUBLIC_HOSTS = {'github.com', 'chatgpt.com', 'www.w3.org', 'docs.aiohttp.org', 'docs.pytest.org'}
 URL = re.compile(r'https?://[^\s\"\'<>`)]+')
 EMAIL = re.compile(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b')
 IPV4 = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
@@ -28,41 +26,6 @@ PATTERNS = {
     'device-serial': re.compile(r'\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b'),
     'literal-secret-assignment': re.compile(r'''(?i)\b[\w-]*(?:token|api[_-]?key|password|secret)[\w-]*["']?\s*[:=]\s*["']?[A-Za-z0-9_+/.=-]{24,}'''),
 }
-
-
-# Single manually reviewed, redacted historical image; not an extension bypass.
-REVIEWED_ASSET = 'assets/sarah-r1-native-redacted.png'
-REVIEWED_SHA256 = '1a818a483e5eaf2291e881dc0e5df5209eac74be7a95419a7b0da03e6cf93108'
-
-
-def reviewed_png(data):
-    """Accept only this metadata-free RGB PNG structure, with valid pixels/CRCs."""
-    try:
-        if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-            return False
-        offset, chunks = 8, []
-        while offset < len(data):
-            length = struct.unpack('>I', data[offset:offset + 4])[0]
-            kind = data[offset + 4:offset + 8]
-            end = offset + 8 + length
-            payload = data[offset + 8:end]
-            crc = struct.unpack('>I', data[end:end + 4])[0]
-            if len(payload) != length or zlib.crc32(kind + payload) != crc:
-                return False
-            chunks.append((kind, payload))
-            offset = end + 4
-        if [kind for kind, _ in chunks] != [b'IHDR', b'IDAT', b'IEND']:
-            return False  # Reject all metadata, ancillary chunks, and trailing data.
-        if chunks[0][1] != struct.pack('>IIBBBBB', 480, 604, 8, 2, 0, 0, 0) or chunks[2][1]:
-            return False
-        expected = 604 * (1 + 480 * 3)
-        decoder = zlib.decompressobj()
-        pixels = decoder.decompress(chunks[1][1], expected + 1)
-        return (len(pixels) == expected and decoder.eof and not decoder.unused_data
-                and not decoder.unconsumed_tail
-                and all(pixels[row * (1 + 480 * 3)] <= 4 for row in range(604)))
-    except (ValueError, struct.error, zlib.error):
-        return False
 
 
 def scan(root, literals=()):
@@ -110,14 +73,6 @@ def scan(root, literals=()):
             findings.append((entry, 0, 'unmanifested-file'))
         if path.is_symlink():
             findings.append((entry, 0, 'symlink'))
-            continue
-        if entry == REVIEWED_ASSET:
-            try:
-                data = path.read_bytes() if stat.S_ISREG(path.stat().st_mode) else b''
-                if hashlib.sha256(data).hexdigest() != REVIEWED_SHA256 or not reviewed_png(data):
-                    findings.append((entry, 0, 'unapproved-reviewed-asset'))
-            except OSError:
-                findings.append((entry, 0, 'unreadable-reviewed-asset'))
             continue
         private_env = re.search(r'(^|\.)env($|\.)', path.name.lower()) and entry != 'config/bridge.env.example'
         if path.suffix.lower() in FORBIDDEN_SUFFIXES or private_env or path.name in {'settings.json', 'native-settings.json'}:

@@ -1,768 +1,114 @@
-"""Offline ACP binding and local voice regressions; no provider requests."""
+"""Offline production speech regressions with disposable synthetic children."""
 import asyncio
-import io
-import json
 import signal
 import sys
 import tempfile
-import threading
-import time
 import unittest
-import wave
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from aiohttp.test_utils import TestClient, TestServer
 from bridge import runtime as module
-from bridge.core import Store
 from bridge.runtime import VoiceRuntime
-from bridge.server import make_app
+from bridge.warm_voice import WarmVoice
 
 
-from bridge.acp_client import ACPClient, ACPConfig, ACPError
-from bridge.acp_runtime import ACPRuntime, create_runtime
-
-
-class ACPTests(unittest.IsolatedAsyncioTestCase):
-    @unittest.skipUnless(Path('/opt/hermes-agent').is_dir(), 'optional installed Hermes composition fixture unavailable')
-    async def test_installed_composition_scope_and_dispatch(self):
-        import subprocess
-        import os
-        script = '''
-import asyncio,sys,json,os
-from pathlib import Path
-from types import SimpleNamespace as NS
-sys.path.insert(0,os.environ.get('HERMES_SOURCE','/opt/hermes-agent'))
-from bridge.acp_launcher import compose, REVIEWED_SOUL
-from bridge.acp_policy import NAMES, SCHEMAS
-from hermes_state import SessionDB
-from hermes_cli.config import _ensure_default_soul_md
-from hermes_cli.default_soul import is_legacy_template_soul
-async def main():
- home=Path(sys.argv[1])
- assert not is_legacy_template_soul(REVIEWED_SOUL.decode())
- (home/'SOUL.md').write_bytes(REVIEWED_SOUL)
- for _ in range(2):
-  _ensure_default_soul_md(home)
-  assert (home/'SOUL.md').read_bytes()==REVIEWED_SOUL
- db=SessionDB(db_path=Path(sys.argv[1])/'state.db')
- resolver=lambda **kw: {'provider':'openai-codex','api_mode':'codex_responses','base_url':'https://chatgpt.com/backend-api/codex','api_key':'offline-placeholder'}
- server=compose(asyncio.get_running_loop(),db,resolver)
- state=server.session_manager.create_session(cwd=sys.argv[1])
- assert state.agent.valid_tool_names==NAMES
- assert state.agent.skip_context_files is True
- assert state.agent.load_soul_identity is False
- assert state.agent._memory_store is None
- assert not state.agent._memory_enabled and not state.agent._user_profile_enabled
- assert (home/'SOUL.md').read_bytes()==REVIEWED_SOUL
- for name in ['terminal','read_file','browser_navigate','delegate_task','execute_code','unknown']:
-  try: state.agent._execute_tool_calls(NS(tool_calls=[NS(function=NS(name=name))]))
-  except ValueError as e: assert str(e)=='acp_scoped_tool_denied'
-  else: raise AssertionError(name)
- calls=[]
- class Conn:
-  async def ext_method(self,method,params):
-   calls.append((method,params));return {'reply':'offline receipt'}
- server._conn=Conn();state.is_running=True
- from model_tools import handle_function_call
- result=await asyncio.to_thread(handle_function_call,'ha_get_state',{'entity_id':'light.test'},state.session_id,enabled_tools=list(NAMES),enabled_toolsets=['sarah_bridge'])
- assert len(calls)==1, result
- assert calls[0][0]=='sarah/dispatch'
- state.is_running=False
- server2=compose(asyncio.get_running_loop(),db,resolver)
- restored=server2.session_manager.get_session(state.session_id)
- assert restored.session_id==state.session_id and restored.agent.session_id==state.session_id
- try: await server2.load_session(sys.argv[1],'missing')
- except ValueError: pass
- else: raise AssertionError('missing load accepted')
- # Actual installed SDK wire path. Fake only conversation/model boundary.
- import socket,acp,contextlib
- from bridge.acp_client import ACPClient
- from bridge.acp_policy import identity
- left,right=socket.socketpair()
- ar,aw=await asyncio.open_connection(sock=left)
- cr,cw=await asyncio.open_connection(sock=right)
- wire_server=compose(asyncio.get_running_loop(),db,resolver)
- serving=asyncio.create_task(acp.run_agent(wire_server,input_stream=aw,output_stream=ar))
- client=ACPClient(cr,cw)
- assert (await client.initialize())['loadSession']
- assert (await client.request('_sarah/policy',{}))['policy']==identity()
- session=(await client.request('session/new',{'cwd':sys.argv[1],'mcpServers':[]}))['sessionId']
- wired=wire_server.session_manager.get_session(session)
- wired.agent._cached_system_prompt='offline cached prompt'
- from datetime import datetime, timezone
- from unittest.mock import patch
- from run_agent import AIAgent
- clock_samples=[datetime(2026,10,30,1,0,tzinfo=timezone.utc),datetime(2026,11,2,1,0,tzinfo=timezone.utc)]
- expected_clocks=[('2026-10-29T20:00:00-05:00','CDT'),('2026-11-01T19:00:00-06:00','CST')]
- seen=[]
- def fake_conversation(agent,user_message,**kw):
-  kw['user_message']=user_message
-  index=len(seen)
-  assert kw['persist_user_message']=='offline prompt'
-  assert kw['user_message'].endswith(chr(10)*2+kw['persist_user_message']), 'fresh clock context missing'
-  local,zone=expected_clocks[index]
-  assert 'America/Chicago: '+local+' '+zone in kw['user_message']
-  assert 'UTC: '+clock_samples[index].isoformat() in kw['user_message']
-  assert len(kw['user_message'])<700
-  assert 'server clock' in agent.ephemeral_system_prompt.lower()
-  assert all('Server clock snapshot' not in str(m.get('content','')) for m in kw['conversation_history'])
-  seen.append(kw['user_message'])
-  call=NS(id='offline_call',function=NS(name='ha_get_state',arguments='{"entity_id":"light.test"}'))
-  messages=list(kw['conversation_history'])+[{'role':'user','content':kw['user_message']},{'role':'assistant','content':None,'tool_calls':[{'id':'offline_call','type':'function','function':{'name':'ha_get_state','arguments':'{"entity_id":"light.test"}'}}]}]
-  # Same override setup as installed turn_context, before tool persistence.
-  agent._persist_user_message_idx=len(kw['conversation_history'])
-  agent._persist_user_message_override=kw['persist_user_message']
-  wired.agent._execute_tool_calls(NS(tool_calls=[call]),messages,session,1)
-  messages.append({'role':'assistant','content':'offline response'})
-  # Exercise installed clean-persistence + returned-history seam, no provider.
-  agent._flush_messages_to_session_db(messages,kw['conversation_history'])
-  agent._apply_persist_user_message_override(messages)
-  return {'final_response':'offline response','messages':messages}
- receipts=[]
- async def owner(name,args):
-  receipts.append((name,args));return {'reply':'server-owned receipt'}
- client.dispatch=owner
- with patch.object(AIAgent,'run_conversation',fake_conversation):
-  for sample in clock_samples:
-   with patch('bridge.acp_launcher.datetime',create=True) as current:
-    current.now.return_value=sample
-    answer=await client.prompt(session,'offline prompt')
-    assert answer=='offline response', answer
-    current.now.assert_called_once_with(timezone.utc)
- assert len(seen)==2 and seen[0]!=seen[1]
- assert receipts==[('ha_get_state',{'entity_id':'light.test'})]*2
- persisted=db.get_messages_as_conversation(session)
- assert [m['content'] for m in persisted if m['role']=='user']==['offline prompt']*2, persisted
- assert all('Server clock snapshot' not in str(m.get('content','')) for m in persisted)
- assert [(m['role'],m.get('content')) for m in wired.history]==[(m['role'],m.get('content')) for m in persisted]
- assert wired.agent._cached_system_prompt=='offline cached prompt'
- reloaded=compose(asyncio.get_running_loop(),db,resolver).session_manager.get_session(session)
- assert [(m['role'],m.get('content')) for m in reloaded.history]==[(m['role'],m.get('content')) for m in persisted]
- print('CLOCK PASS: fresh per-turn UTC + Chicago CDT/CST, SDK wire, literal stored/returned history, unchanged cached system')
- await client.close()
- serving.cancel()
- with contextlib.suppress(asyncio.CancelledError): await serving
- aw.close()
- assert db.get_messages_as_conversation(session)[-1]['content']=='offline response'
- print('SDK WIRE PASS: policy, explicit scoped request, turn owner, persisted history')
- print('BOOTSTRAP PASS: installed seed preserves exact non-legacy sentinel; context, soul identity, memory disabled')
- print('INSTALLED PASS',sorted(NAMES))
- print('EFFECTIVE_SCHEMAS',json.dumps(state.agent.tools))
-asyncio.run(main())
-'''
-        with tempfile.TemporaryDirectory() as home:
-            import shutil
-            shutil.copyfile('bridge/sarah-acp.yaml', Path(home)/'config.yaml')
-            global_home = Path(home)/'global'
-            global_home.mkdir()
-            (global_home/'config.yaml').write_text('model:\n  provider: openai-codex\n  default: gpt-offline\n')
-            result = subprocess.run([sys.executable, '-B', '-c', script, home],
-                env={'HOME':home,'HERMES_HOME':home,'HERMES_GLOBAL_HOME':str(global_home),
-                     'HERMES_SOURCE':__import__('os').environ.get('HERMES_SOURCE','/opt/hermes-agent'),
-                     'PATH':'/usr/bin:/bin'},
-                capture_output=True,text=True,timeout=25)
-            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            print(result.stdout)
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.tmp.name) / 'state.db')
-        self.store.provision('a', 'a' * 48)
-        self.store.provision('b', 'b' * 48)
-        self.conversation = self.store.conversation('a')
-        # Synthetic installed source identity; never depend on operator installation.
-        self.source_patch = patch.object(ACPConfig, 'identity', new_callable=__import__('unittest.mock', fromlist=['PropertyMock']).PropertyMock)
-        self.source_identity = self.source_patch.start()
-        from bridge.acp_policy import identity
-        self.source_identity.side_effect = lambda: __import__('bridge.acp_policy', fromlist=['identity']).identity()
-        self.config = ACPConfig(cwd=self.tmp.name)
-        self.calls = []
-        self.clients = []
-        self.adapters = []
-        self.stall = False
-        self.disconnect_prompt = False
-        self.bad_policy = False
-        self.entered = asyncio.Event()
-
-    def tearDown(self):
-        self.source_patch.stop()
-        self.store.close()
-        self.tmp.cleanup()
-
-    async def connect(self, config):
-        reader = asyncio.StreamReader(limit=ACPClient.LINE_BYTES)
-        owner = self
-        class Writer:
-            closed = False
-            def frame(self, value):
-                reader.feed_data((json.dumps({'jsonrpc': '2.0', **value}) + '\n').encode())
-            def write(self, data):
-                frame = json.loads(data)
-                owner.calls.append(frame)
-                method = frame.get('method')
-                if method == 'initialize':
-                    result = {'protocolVersion': 1, 'agentCapabilities': {'loadSession': True}}
-                elif method == '_sarah/policy':
-                    from bridge.acp_policy import identity, SCHEMAS
-                    result = {'policy': 'wrong' if owner.bad_policy else identity(), 'schemas': SCHEMAS}
-                elif method == '_sarah/turn':
-                    result = {}
-                elif method == 'session/new':
-                    result = {'sessionId': 'synthetic-' + str(len(owner.clients))}
-                elif method == 'session/load':
-                    # History updates must not be spoken as new assistant output.
-                    self.frame({'method': 'session/update', 'params': {'sessionId': frame['params']['sessionId'],
-                        'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'old history'}}}})
-                    result = {}
-                elif method == 'session/prompt':
-                    owner.entered.set()
-                    if owner.disconnect_prompt:
-                        reader.feed_eof()
-                        return
-                    if owner.stall:
-                        return
-                    self.frame({'method': 'session/update', 'params': {'sessionId': frame['params']['sessionId'],
-                        'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'hello'}}}})
-                    result = {'stopReason': 'end_turn'}
-                else:
-                    return
-                self.frame({'id': frame['id'], 'result': result})
-            async def drain(self): pass
-            def close(self): self.closed = True
-            async def wait_closed(self): pass
-        client = ACPClient(reader, Writer())
-        self.clients.append(client)
-        return client
-
-    async def asyncTearDown(self):
-        for adapter in self.adapters:
-            await adapter.close()
-
-    def adapter(self):
-        adapter = ACPRuntime(self.store, '/not-used', self.config)
-        self.adapters.append(adapter)
-        return adapter
-
-    async def bound(self, adapter=None, device='a', conversation=None, history=()):
-        return await (adapter or self.adapter())._reply_bound('hello', history,
-            device=device, conversation=conversation or self.conversation)
-
-    async def test_durable_load_and_device_isolation(self):
-        with patch.object(ACPClient, 'connect', self.connect):
-            self.assertEqual(await self.bound(), 'hello')
-            self.store.close()
-            self.store = Store(Path(self.tmp.name) / 'state.db')
-            self.assertEqual(await self.bound(history=[{'role': 'assistant', 'content': 'hello'}]), 'hello')
-            other = self.store.conversation('b')
-            self.assertEqual(await self.bound(device='b', conversation=other), 'hello')
-            with self.assertRaisesRegex(ValueError, 'not_found'):
-                await self.bound(device='b')
-        methods = [c.get('method') for c in self.calls]
-        self.assertEqual(methods.count('session/new'), 2)
-        self.assertEqual(methods.count('session/load'), 1)
-        sessions = self.store.db.execute('SELECT session FROM acp_sessions').fetchall()
-        self.assertEqual(len({r['session'] for r in sessions}), 2)
-        for adapter in self.adapters:
-            await adapter.close()
-        self.assertTrue(all(c.writer.closed for c in self.clients))
-
-    async def test_permission_and_client_execution_denied(self):
-        client = await self.connect(self.config)
-        await client.handle_agent({'method': 'session/request_permission', 'id': 'permission'})
-        await client.handle_agent({'method': 'terminal/create', 'id': 'exec'})
-        self.assertEqual(self.calls[-2]['result'], {'outcome': {'outcome': 'cancelled'}})
-        self.assertEqual(self.calls[-1]['error']['code'], -32601)
-        await client.close()
-
-    async def test_public_timezone_only_nonsecret_child_configuration(self):
+class TranscriptionTests(unittest.TestCase):
+    def test_local_model_path_no_download_and_bounded_transcript(self):
         from types import SimpleNamespace
-        from unittest.mock import AsyncMock
-        from bridge.calendar import ZONE
-        process = SimpleNamespace(stdout=object(), stdin=object())
-        spawn = AsyncMock(return_value=process)
-        with patch('bridge.acp_client.asyncio.create_subprocess_exec', spawn):
-            client = await ACPClient.connect(self.config)
-        self.assertIs(client.process, process)
-        env = spawn.call_args.kwargs['env']
-        self.assertEqual(set(env), {'HOME', 'PATH', 'LANG', 'R1_TIMEZONE'})
-        self.assertEqual(env['R1_TIMEZONE'], ZONE)
-        self.assertEqual(spawn.call_args.args, self.config.command)
-
-    async def test_dispatch_requires_current_session_policy_and_allowlist(self):
-        from bridge.acp_policy import identity
-        client = await self.connect(self.config)
-        seen = []
-        async def dispatch(name, args):
-            seen.append((name,args));return {'reply':'actual owner output'}
-        client.dispatch = dispatch
-        client.session_id = 'bound'
-        client.turn_nonce = 'current'
-        request = {'method':'_sarah/dispatch','id':'tool','params':{
-            'sessionId':'bound','policy':identity(),'nonce':'current','name':'ha_get_state',
-            'arguments':{'entity_id':'light.test'}}}
-        with self.assertRaisesRegex(ACPError,'acp_dispatch_binding_denied'):
-            await client.handle_agent(request)
-        client.collecting = True
-        for key,value in [('sessionId','wrong'),('policy','wrong')]:
-            bad = {**request,'params':{**request['params'],key:value}}
-            with self.assertRaisesRegex(ACPError,'acp_dispatch_binding_denied'):
-                await client.handle_agent(bad)
-        with self.assertRaisesRegex(ValueError,'acp_scoped_tool_denied'):
-            await client.handle_agent({**request,'params':{**request['params'],'name':'terminal'}})
-        self.assertEqual(seen,[])
-        await client.handle_agent(request)
-        self.assertEqual(seen,[('ha_get_state',{'entity_id':'light.test'})])
-        self.assertEqual(self.calls[-1]['result'],{'reply':'actual owner output'})
-        await client.close()
-
-    async def test_transport_loss_and_restart_never_replay(self):
-        self.disconnect_prompt = True
-        with patch.object(ACPClient, 'connect', self.connect):
-            with self.assertRaisesRegex(ACPError, 'acp_disconnected'):
-                await self.bound()
-            self.store.close()
-            self.store = Store(Path(self.tmp.name) / 'state.db')
-            with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
-                await self.bound()
-        self.assertEqual(sum(c.get('method') == 'session/prompt' for c in self.calls), 1)
-        self.assertTrue(any(c.get('method') == 'session/cancel' for c in self.calls))
-        self.assertTrue(self.clients[0].writer.closed)
-
-    async def test_stop_marks_uncertain_closes_and_no_replay(self):
-        self.stall = True
-        with patch.object(ACPClient, 'connect', self.connect):
-            task = asyncio.create_task(self.bound())
-            await asyncio.wait_for(self.entered.wait(), 1)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError): await task
-            with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
-                await self.bound()
-        self.assertTrue(self.clients[0].writer.closed)
-        self.assertEqual(sum(c.get('method') == 'session/prompt' for c in self.calls), 1)
-        self.assertTrue(any(c.get('method') == 'session/cancel' for c in self.calls))
-
-    async def test_policy_mismatch_and_changed_binding_fail_closed(self):
-        self.bad_policy = True
-        with patch.object(ACPClient, 'connect', self.connect):
-            with self.assertRaisesRegex(ACPError,'acp_policy_mismatch'):
-                await self.bound()
-            self.assertFalse(any(c.get('method') in ('session/new','session/prompt') for c in self.calls))
-            self.bad_policy = False
-            self.assertEqual(await self.bound(),'hello')
-        with patch('bridge.acp_policy.identity', return_value='changed'):
-            with patch.object(ACPClient,'connect',side_effect=AssertionError('must not reconnect')):
-                with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):
-                    await self.bound()
-
-    async def test_legacy_android_conversation_explicit_migration_no_failed_replay(self):
-        # Synthetic completed dialogue, STT errors and refused clock request;
-        # no ACP binding. No real device identifiers or history are used.
-        profile = Path(self.tmp.name) / 'migration-profile'
-        profile.mkdir()
-        self.config = ACPConfig(cwd=str(profile / 'workspace'))
-        adapter = self.adapter()
-        for i in range(26):
-            turn = self.store.admit('a', self.conversation, 'old-' + str(i), 'old')
-            self.store.finish('a', turn, 'done', 'answer-' + str(i), 'question-' + str(i))
-        for i in range(2):
-            turn = self.store.admit('a', self.conversation, 'stt-' + str(i), 'stt')
-            self.store.finish('a', turn, 'error', 'Voice request failed (ValueError).', '')
-        with patch.object(ACPClient, 'connect', side_effect=AssertionError('predispatch refusal')):
-            with self.assertRaisesRegex(ACPError, 'acp_backend_requires_new_conversation'):
-                await adapter.reply_turn('What time is it?', [], device='a', conversation=self.conversation)
-        adapter.ready = True
-        adapter.transcribe = lambda path: 'What time is it?'
-        audio = io.BytesIO()
-        with wave.open(audio, 'wb') as wav:
-            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
-            wav.writeframes(b'\0' * 16000)
-        client = TestClient(TestServer(make_app(self.store, adapter)))
-        await client.start_server()
-        try:
-            with patch.object(ACPClient, 'connect', side_effect=AssertionError('predispatch refusal')):
-                response = await client.post('/v1/turns', data=audio.getvalue(), headers={
-                    'Authorization': 'Bearer ' + 'a' * 48, 'Content-Type': 'audio/wav',
-                    'X-Conversation': self.conversation, 'Idempotency-Key': 'failed-time'})
-                self.assertEqual(response.status, 202)
-                failed = (await response.json())['turn']
-                for _ in range(30):
-                    if self.store.get('a', failed)['state'] == 'error': break
-                    await asyncio.sleep(0.01)
-                failure = self.store.get('a', failed)
-                self.assertEqual(failure['state'], 'error')
-                self.assertIn('acp_backend_requires_new_conversation', failure['detail'])
-                self.assertIn('nothing dispatched', failure['detail'])
-                self.assertNotIn('outcome may be unknown', failure['detail'])
-        finally:
-            await client.close()
-        original = [tuple(r) for r in self.store.db.execute('SELECT * FROM turns ORDER BY rowid')]
-        plan = adapter.legacy_migration_plan(device='a', conversation=self.conversation)
-        self.assertEqual(plan['completed_turns'], 26)
-        with patch.dict('os.environ', {'HERMES_HOME': str(profile)}), patch.object(sys, 'path', ['/opt/hermes-agent'] + sys.path):
-            try:
-                from hermes_state import SessionDB
-                from acp_adapter.session import SessionManager
-            except ImportError:
-                self.skipTest('optional installed Hermes SessionDB fixture unavailable')
-            db = SessionDB(db_path=profile / 'state.db')
-            try:
-                with self.assertRaisesRegex(ACPError, 'acp_migration_snapshot_changed'):
-                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest='stale', session_db=db)
-                self.assertEqual(self.store.db.execute('SELECT count(*) FROM acp_sessions').fetchone()[0], 0)
-                with patch.object(ACPClient, 'connect', side_effect=AssertionError('migration cannot prompt')):
-                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest=plan['digest'], session_db=db)
-                binding = self.store.db.execute('SELECT * FROM acp_sessions').fetchone()
-                self.assertEqual(binding['state'], 'ready')
-                restored = SessionManager(agent_factory=lambda: SimpleNamespace(model='offline'), db=db).get_session(binding['session'])
-                expected = [m for i in range(26) for m in (
-                    {'role': 'user', 'content': 'question-' + str(i)},
-                    {'role': 'assistant', 'content': 'answer-' + str(i)})]
-                self.assertIsNotNone(restored)
-                assert restored is not None
-                self.assertEqual([{'role':m['role'],'content':m['content']} for m in restored.history], expected)
-                with self.assertRaisesRegex(ACPError, 'acp_migration_binding_exists'):
-                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest=plan['digest'], session_db=db)
-                with patch.object(ACPClient, 'connect', self.connect):
-                    # Explicit NEW request, not failed time-question replay.
-                    self.assertEqual(await adapter.reply_turn('New compatible turn', [], device='a', conversation=self.conversation), 'hello')
-                    self.assertEqual(await adapter.reply_turn('New followup', [], device='a', conversation=self.conversation), 'hello')
-                self.assertFalse(any(c.get('method') == 'session/new' for c in self.calls))
-                self.assertEqual([c['params']['sessionId'] for c in self.calls if c.get('method') == 'session/load'], [binding['session']] * 2)
-                prompts = [c['params']['prompt'][0]['text'] for c in self.calls if c.get('method') == 'session/prompt']
-                self.assertEqual(prompts, ['New compatible turn', 'New followup'])
-                self.assertEqual(original, [tuple(r) for r in self.store.db.execute('SELECT * FROM turns ORDER BY rowid')])
-                self.assertEqual(self.store.db.execute('SELECT count(*) FROM dispatches').fetchone()[0], 0)
-                with self.assertRaisesRegex(ValueError, 'not_found'):
-                    adapter.legacy_migration_plan(device='b', conversation=self.conversation)
-                partial = self.store.conversation('a')
-                turn = self.store.admit('a', partial, 'partial-import', 'partial')
-                self.store.finish('a', turn, 'done', 'old answer', 'old question')
-                partial_plan = adapter.legacy_migration_plan(device='a', conversation=partial)
-                with patch.object(db, 'replace_messages', side_effect=OSError('offline injected write failure')):
-                    with self.assertRaises(OSError):
-                        adapter.migrate_legacy(device='a', conversation=partial, expected_digest=partial_plan['digest'], session_db=db)
-                self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions WHERE conversation=?', (partial,)).fetchone()[0], 'migrating')
-                with patch.object(ACPClient, 'connect', side_effect=AssertionError('partial import cannot prompt')):
-                    with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
-                        await adapter.reply_turn('must not send', [], device='a', conversation=partial)
-            finally:
-                db.close()
-
-    async def test_old_history_and_inflight_refused_without_connect(self):
-        with patch.object(ACPClient, 'connect', side_effect=AssertionError('must not connect')):
-            with self.assertRaisesRegex(ACPError, 'acp_backend_requires_new_conversation'):
-                await self.bound(history=[{'role': 'user', 'content': 'old'}])
-            self.store.db.execute('INSERT INTO acp_sessions VALUES(?,?,?,?,?)',
-                ('a', self.conversation, self.config.identity, 'synthetic', 'inflight'))
-            with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
-                await self.bound()
-
-    async def test_inactive_selector_rejects_audio_without_agent(self):
-        with self.assertRaisesRegex(ValueError, 'unsupported_voice_backend'):
-            create_runtime(self.store, '/not-used', 'codex')
-        with self.assertRaisesRegex(ValueError, 'unsupported_voice_backend'):
-            create_runtime(self.store, '/not-used', 'unknown')
-        # Readiness fixture only; never depend on a live profile's generated files.
-        with patch('bridge.acp_launcher.validate_profile'):
-            adapter = create_runtime(self.store, '/not-used')
-            self.assertTrue(adapter.ready)
-        adapter = ACPRuntime(self.store, '/not-used', self.config)
-        self.assertFalse(adapter.ready)  # Non-dedicated cwd still fails closed.
-        with patch.object(ACPClient, 'connect', side_effect=AssertionError('must not connect')):
-            with self.assertRaisesRegex(ACPError, adapter.reason):
-                await adapter.reply('hello')
-
-            client = TestClient(TestServer(make_app(self.store, adapter, ha=object(), siyuan=object(),
-                                                     calendar=object(), tvtime=object())))
-            await client.start_server()
-            try:
-                health = await client.get('/v1/health', headers={'Authorization': 'Bearer ' + 'a' * 48})
-                state = await health.json()
-                self.assertFalse(state['ready'])
-                self.assertFalse(state['tools'])
-                self.assertIn(adapter.reason, state['reason'])
-                self.assertTrue(all(state[k] for k in ('home_assistant', 'siyuan', 'calendar', 'tvtime')))
-                response = await client.post('/v1/turns', data=b'no audio admitted',
-                    headers={'Authorization': 'Bearer ' + 'a' * 48, 'Content-Type': 'audio/wav'})
-                self.assertEqual(response.status, 503)
-                self.assertEqual((await response.json())['error'], adapter.reason)
-                self.assertEqual(self.store.db.execute('SELECT count(*) FROM turns').fetchone()[0], 0)
-            finally: await client.close()
-
-    async def test_reviewed_bootstrap_profile_fails_closed(self):
-        from bridge import acp_launcher
-        profile = Path(self.tmp.name)/'profile'
-        profile.mkdir()
-        config = profile/'config.yaml'
-        reviewed_config = Path('bridge/sarah-acp.yaml').read_bytes()
-        config.write_bytes(reviewed_config)
-        soul = profile/'SOUL.md'
-        soul.write_bytes(acp_launcher.REVIEWED_SOUL)
-        scoped = ACPConfig(cwd=str(profile/'workspace'))
-        with patch.object(acp_launcher, 'PROFILE', profile):
-            def check(accepted):
-                if accepted:
-                    acp_launcher.validate_profile()
-                else:
-                    with self.assertRaises((ValueError, OSError)):
-                        acp_launcher.validate_profile()
-                self.assertEqual(ACPRuntime(self.store, '/not-used', scoped).ready, accepted)
-            check(True)
-            # Includes installed default identity, not merely arbitrary text.
-            seeded = b'Synthetic default persona; not reviewed inert bootstrap.'
-            for content in (seeded, b'', b'arbitrary identity', acp_launcher.REVIEWED_SOUL+b'\n'):
-                with self.subTest(content=content[:32]):
-                    soul.write_bytes(content)
-                    check(False)
-                    self.assertEqual(soul.read_bytes(), content)  # No repair/delete at launch.
-            soul.unlink()
-            check(False)
-            target = profile/'sentinel-target'
-            target.write_bytes(acp_launcher.REVIEWED_SOUL)
-            soul.symlink_to(target)
-            check(False)
-            soul.unlink()
-            soul.write_bytes(acp_launcher.REVIEWED_SOUL)
-            for name in ('.env', 'AGENTS.md'):
-                path = profile/name
-                path.write_bytes(b'')
-                check(False)
-                path.unlink()
-                path.symlink_to(profile/'missing')
-                check(False)
-                path.unlink()
-            config.write_bytes(reviewed_config+b'\n')
-            check(False)
-            config.write_bytes(reviewed_config)
-            check(True)
-
-
-class LocalVoiceOwnershipTests(unittest.IsolatedAsyncioTestCase):
-    async def test_stop_native_tts_dispatch_ownership(self):
-        # Existing HTTP/runtime seams; native thread + synthetic child are real.
-        # No Whisper/Kokoro model, credentials or integration traffic involved.
-        for boundary in ('native', 'tts', 'dispatch'):
-            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
-                adapter = VoiceRuntime()
-                started=asyncio.Event(); release=threading.Event(); native_done=threading.Event()
-                loop=asyncio.get_running_loop(); children=[]; calls=[]; clips=[]
-                first=True
-
-                def transcribe(path):
-                    nonlocal first
-                    clips.append(path)
-                    if first and boundary=='native':
-                        first=False
-                        loop.call_soon_threadsafe(started.set)
-                        try:
-                            if not release.wait(3): raise RuntimeError('synthetic_release_timeout')
-                            self.assertTrue(path.exists(), 'live native worker lost clip')
-                        finally: native_done.set()
-                    return 'synthetic transcript'
-
-                async def answer(text, history, dispatch=None):
-                    if boundary=='dispatch' and not calls:
-                        return (await dispatch('ha_call_service', {}))['reply']
-                    return 'normal followup'
-
-                async def dispatch(name, args, claim):
-                    self.assertTrue(await claim({'name':name,'arguments':args}))
-                    calls.append(name); started.set()
-                    await asyncio.Event().wait()
-
-                async def speak(text, path):
-                    nonlocal first
-                    if first and boundary=='tts':
-                        first=False
-                        await VoiceRuntime.speak(adapter, text, path)
-                    else: path.write_bytes(b'synthetic audio')
-
-                real_spawn=asyncio.create_subprocess_exec
-                async def spawn(*args, **kwargs):
-                    output=Path(args[args.index('--output')+1])
-                    proc=await real_spawn(sys.executable, '-c',
-                        'import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); '
-                        f'pathlib.Path({str(output)!r}).write_bytes(b"partial"); time.sleep(30)',
-                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                    children.append(proc)
-                    while not output.exists(): await asyncio.sleep(0.002)
-                    started.set()
-                    return proc
-
-                adapter.transcribe=transcribe; adapter.reply=answer; adapter.speak=speak
-                store=Store(Path(tmp)/'state.db'); store.provision('test','a'*48)
-                conversation=store.conversation('test')
-                app=make_app(store,adapter,ha=SimpleNamespace(dispatch=dispatch) if boundary=='dispatch' else None)
-                client=TestClient(TestServer(app)); await client.start_server()
-                buf=io.BytesIO()
-                with wave.open(buf,'wb') as wav:
-                    wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
-                    wav.writeframes(b'\0\0'*16000)
-                headers={'Authorization':'Bearer '+'a'*48,'Content-Type':'audio/wav',
-                         'X-Conversation':conversation,'Idempotency-Key':'first'}
-                closing=None
-                try:
-                    with patch.object(module.asyncio,'create_subprocess_exec',spawn), \
-                         patch.object(module,'TTS_TERMINATE_GRACE',0.02):
-                        response=await client.post('/v1/turns',data=buf.getvalue(),headers=headers)
-                        self.assertEqual(response.status,202); turn=(await response.json())['turn']
-                        await asyncio.wait_for(started.wait(),1)
-                        expected='uncertain' if boundary=='dispatch' else 'cancelled'
-                        for _ in range(2):
-                            response=await client.post('/v1/turns/'+turn+'/cancel',json={},headers=headers)
-                            self.assertEqual((await response.json())['state'],expected)
-                        replay=await client.post('/v1/turns',data=buf.getvalue(),headers=headers)
-                        self.assertEqual((await replay.json())['turn'],turn)
-                        if boundary=='native':
-                            busy=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'busy'})
-                            self.assertEqual((await busy.json())['error'],'voice_worker_busy')
-                            self.assertFalse(native_done.is_set()); self.assertTrue(clips[0].exists())
-                            closing=asyncio.create_task(client.close())
-                            await asyncio.sleep(0.02)
-                            self.assertFalse(closing.done(), 'cleanup abandoned native owner')
-                            release.set(); await asyncio.wait_for(closing,1)
-                            self.assertTrue(native_done.is_set()); self.assertFalse(clips[0].exists())
-                            # Same app/Store, new synthetic transport after cleanup.
-                            client=TestClient(TestServer(app)); await client.start_server()
-                        else:
-                            async with asyncio.timeout(1):
-                                while list((Path(tmp)/'media').iterdir()): await asyncio.sleep(0.002)
-                        self.assertFalse((Path(tmp)/'media'/(turn+'.mp3')).exists())
-                        self.assertTrue(all(p.returncode is not None for p in children))
-                        if boundary=='dispatch':
-                            row=store.get('test',turn)
-                            self.assertIn('outcome unknown',row['detail'])
-                            store.recover(); self.assertEqual(store.get('test',turn),row)
-                            blocked=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'blocked'})
-                            self.assertEqual((await blocked.json())['error'],'conversation_busy_or_uncertain')
-                            self.assertEqual(store.db.execute('SELECT count(*) FROM dispatches').fetchone()[0],1)
-                            headers['X-Conversation']=store.conversation('test')
-                        response=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'followup'})
-                        self.assertEqual(response.status,202); followup=(await response.json())['turn']
-                        async with asyncio.timeout(1):
-                            while store.get('test',followup)['state']!='done': await asyncio.sleep(0.002)
-                        self.assertEqual(store.get('test',followup)['detail'],'normal followup')
-                        self.assertEqual(store.get('test',turn)['state'],expected)
-                        self.assertEqual(len(calls),1 if boundary=='dispatch' else 0)
-                finally:
-                    release.set()
-                    if closing: await closing
-                    await client.close(); store.close()
-                    for child in children:
-                        if child.returncode is None: child.kill()
-                        await child.wait()
-
-
-class TTSTests(unittest.IsolatedAsyncioTestCase):
-    async def probe(self, stage, mode, *, fail=False, ignores_term=True):
         adapter = VoiceRuntime()
+        segments = [SimpleNamespace(text=' hello '), SimpleNamespace(text='Sarah')]
+        with patch.object(module, 'WhisperModel') as factory:
+            factory.return_value.transcribe.return_value = (segments, None)
+            self.assertEqual(adapter.transcribe(Path('synthetic.wav')), 'hello Sarah')
+            self.assertEqual(adapter.transcribe(Path('synthetic.wav')), 'hello Sarah')
+            factory.assert_called_once()
+            self.assertTrue(factory.call_args.kwargs['local_files_only'])
+            self.assertEqual(factory.call_args.kwargs['compute_type'], 'int8')
+            self.assertEqual(factory.return_value.transcribe.call_args.kwargs,
+                             {'beam_size':3, 'language':'en', 'vad_filter':True})
+            for text in ('', 'x'*8001):
+                factory.return_value.transcribe.return_value = ([SimpleNamespace(text=text)], None)
+                with self.assertRaisesRegex(ValueError, 'empty_or_oversize_transcript'):
+                    adapter.transcribe(Path('synthetic.wav'))
+
+    def test_missing_local_assets_fail_without_retry(self):
+        with patch.object(module, 'WhisperModel', side_effect=RuntimeError('synthetic missing assets')) as factory:
+            with self.assertRaises(RuntimeError): VoiceRuntime().transcribe(Path('synthetic.wav'))
+            factory.assert_called_once()
+
+
+class EncoderOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def probe(self, mode):
         children = []
         real_spawn = asyncio.create_subprocess_exec
+        started = asyncio.Event()
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / 'reply.mp3'
-            ready = asyncio.Event()
-
+            target = Path(tmp) / 'out.mp3'
+            async def synth(worker, text, output):
+                output.write_bytes(b'synthetic wav')
             async def factory(*args, **kwargs):
-                current = 'encode' if args[0] == '/usr/bin/ffmpeg' else 'speech'
-                output = Path(args[-1]) if current == 'encode' else Path(args[args.index('--output') + 1])
-                hangs = current == stage
+                self.assertEqual(args[0], '/usr/bin/ffmpeg')
+                output = Path(args[-1])
+                handler = 'SIG_DFL' if mode == 'graceful' else 'SIG_IGN'
+                ending = ('raise SystemExit(7)' if mode == 'failure' else
+                          '' if mode == 'success' else 'time.sleep(30)')
                 code = ('import pathlib,signal,time; '
-                        f'signal.signal(signal.SIGTERM,signal.{"SIG_IGN" if ignores_term else "SIG_DFL"}); '
-                        f'pathlib.Path({str(output)!r}).write_bytes(b"partial"); '
-                        + ('time.sleep(30)' if hangs else ''))
-                if fail and hangs:
-                    code = code.replace('time.sleep(30)', 'raise SystemExit(7)')
-                proc = await real_spawn(sys.executable, '-c', code,
-                                        stdin=asyncio.subprocess.PIPE,
-                                        stdout=asyncio.subprocess.DEVNULL,
-                                        stderr=asyncio.subprocess.DEVNULL)
-                children.append(proc)
-                if hangs:
-                    # Child has installed SIGTERM handler and written partial output.
-                    while not output.exists():
-                        await asyncio.sleep(0.002)
-                    ready.set()
-                    if mode == 'spawn_cancel':
-                        # Cancellation between process creation and handle return.
-                        await asyncio.sleep(0.03)
-                return proc
-
+                        f'signal.signal(signal.SIGTERM,signal.{handler}); '
+                        f'pathlib.Path({str(output)!r}).write_bytes(b"partial"); {ending}')
+                child = await real_spawn(sys.executable, '-c', code,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                children.append(child)
+                while not output.exists():
+                    await asyncio.sleep(.002)
+                started.set()
+                if mode == 'spawn_cancel':
+                    await asyncio.sleep(.05)
+                return child
             task = None
             try:
-                with patch.object(module.asyncio, 'create_subprocess_exec', factory), \
-                     patch.object(module, 'TTS_STAGE_SECONDS', 0.08, create=True), \
-                     patch.object(module, 'TTS_TERMINATE_GRACE', 0.02, create=True):
-                    task = asyncio.create_task(adapter.speak('synthetic text', target))
-                    if mode in ('cancel', 'spawn_cancel', 'repeat_cancel'):
-                        await asyncio.wait_for(ready.wait(), 1)
-                        self.assertFalse(target.exists(), 'in-progress audio published')
+                with patch.object(WarmVoice, 'synthesize', synth), \
+                        patch.object(module.asyncio, 'create_subprocess_exec', factory), \
+                        patch.object(module, 'TTS_STAGE_SECONDS', .2), \
+                        patch.object(module, 'TTS_TERMINATE_GRACE', .04):
+                    task = asyncio.create_task(VoiceRuntime().speak('synthetic', target))
+                    if mode in ('cancel', 'spawn_cancel', 'repeat_cancel', 'graceful'):
+                        await asyncio.wait_for(started.wait(), 1)
+                        self.assertFalse(target.exists())
                         task.cancel()
                         if mode == 'repeat_cancel':
-                            await asyncio.sleep(0.005)
+                            await asyncio.sleep(.005)
                             task.cancel()
                         with self.assertRaises(asyncio.CancelledError):
                             await task
-                    elif mode == 'success':
-                        await task
-                    elif fail:
+                    elif mode == 'timeout':
+                        with self.assertRaises(TimeoutError):
+                            await asyncio.wait_for(task, 2)
+                    elif mode == 'failure':
                         with self.assertRaisesRegex(RuntimeError, '^tts_encoding_failed$'):
                             await task
                     else:
-                        # Pre-fix outer timeout returns with child still alive.
-                        with self.assertRaises(TimeoutError):
-                            await asyncio.wait_for(task, 0.3)
+                        await task
                 self.assertTrue(children)
-                self.assertTrue(all(child.returncode is not None for child in children),
-                                'TTS returned while subprocess remains alive')
+                self.assertTrue(all(child.returncode is not None for child in children))
                 if mode == 'success':
-                    self.assertEqual(target.read_bytes(), b'partial')  # Synthetic child output, not real MP3.
+                    self.assertEqual(target.read_bytes(), b'partial')
                     self.assertEqual(target.stat().st_mode & 0o777, 0o600)
                     self.assertEqual(list(Path(tmp).iterdir()), [target])
                 else:
-                    if not fail:
-                        expected = signal.SIGKILL if ignores_term else signal.SIGTERM
-                        self.assertEqual(children[-1].returncode, -expected)
-                    self.assertFalse(target.exists(), 'partial audio published')
-                    self.assertEqual(list(Path(tmp).iterdir()), [], 'temporary audio leaked')
+                    self.assertFalse(target.exists())
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+                    expected = 7 if mode == 'failure' else -(signal.SIGTERM if mode == 'graceful' else signal.SIGKILL)
+                    self.assertEqual(children[-1].returncode, expected)
             finally:
-                if task and not task.done():
+                if task is not None and not task.done():
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
-                # Keep intentionally failing pre-fix probes harmless.
                 for child in children:
                     if child.returncode is None:
                         child.kill()
                     await child.wait()
 
-    async def test_speech_deadline_kills_reaps(self):
-        await self.probe('speech', 'timeout')
-
-    async def test_encoder_deadline_kills_reaps_no_partial(self):
-        await self.probe('encode', 'timeout')
-
-    async def test_speech_cancellation_kills_reaps(self):
-        await self.probe('speech', 'cancel')
-
-    async def test_encoder_cancellation_kills_reaps_no_partial(self):
-        await self.probe('encode', 'cancel')
-
-    async def test_encoder_failure_does_not_publish_partial(self):
-        await self.probe('encode', 'failure', fail=True)
-
-    async def test_spawn_cancellation_retains_handle_and_reaps(self):
-        await self.probe('speech', 'spawn_cancel')
-
-    async def test_repeated_cancellation_does_not_interrupt_reap(self):
-        await self.probe('encode', 'repeat_cancel')
-
-    async def test_graceful_termination_reaps(self):
-        await self.probe('speech', 'cancel', ignores_term=False)
-
-    async def test_success_publishes_only_final_private_audio(self):
-        await self.probe(None, 'success')
-
-
-if __name__ == '__main__':
-    unittest.main()
+    async def test_encoder_ownership_at_all_boundaries(self):
+        for mode in ('success', 'failure', 'timeout', 'cancel', 'spawn_cancel', 'repeat_cancel', 'graceful'):
+            with self.subTest(mode=mode):
+                await self.probe(mode)

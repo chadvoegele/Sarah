@@ -18,7 +18,7 @@ class HTTPTests(AioHTTPTestCase):
         self.assertEqual((await self.client.get('/v1/health')).status,403)
         r=await self.client.get('/v1/health',headers=self.auth());o=await r.json()
         self.assertTrue(o['connected']);self.assertFalse(o['ready'])
-        self.assertEqual(o['reason'],'hermes_ingress_security_extension_required')
+        self.assertEqual(o['reason'],'runtime_not_configured')
     async def test_no_generic_proxy_or_overrides(self):
         for value in [{'session_id':'foreign'},{'url':'http://127.0.0.1:8642'},{'tool':'terminal'},{'model':'paid'},{'profile':'other'},{'file':'/etc/passwd'}]:
             r=await self.client.post('/v1/conversations',json=value,headers=self.auth());self.assertEqual(r.status,403)

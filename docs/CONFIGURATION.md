@@ -1,19 +1,30 @@
-# Explicit configuration
+# Configuration
 
-ACP is the only reasoning backend; `--backend acp` remains accepted for existing invocations and `--backend codex` is rejected. Read [ACP deployment and limitations](ACP.md). Fixed generic source/profile paths remain deployment templates; no configured profile is distributed. Model/provider follow the saved global Hermes default at new child creation.
+The bridge does not load `.env` files itself. `config/bridge.env.example` is an example for an administrator-managed environment. Never commit private environment files.
 
-`config/bridge.env.example` lists generic values; it is not loaded automatically. Export approved values or use a private service-manager environment file. Never source untrusted env files. Integration flags require literal `1`; credentials alone do not enable a backend. No credentials are shipped.
+| Setting | Meaning |
+| --- | --- |
+| `SARAH_BACKEND` | Optional compatibility assertion; only `acp` is accepted. |
+| `SARAH_ACP_CWD` | Required absolute agent-side workspace. For stdio it must also exist locally. |
+| `SARAH_ACP_SOCKET` | Absolute Unix socket path to a separately managed ACP v1 agent. |
+| `SARAH_ACP_COMMAND` | Alternative JSON array of executable/arguments, without shell parsing. |
+| `SARAH_ACP_TIMEOUT_SECONDS` | Whole ACP connect/initialize/load/prompt deadline: 1–600 seconds, default 120. |
+| `R1_WHISPER_MODELS` | Existing local Whisper cache; default `.build/whisper-models` under repository root. |
+| `R1_KOKORO_ROOT` | Existing Kokoro root containing model, voices and `venv/bin/python`; default `.build/kokoro-audition`. |
+| `R1_TIMEZONE` | Speech presentation of explicit timestamps, default `UTC`. Not a semantic time-answer shortcut. |
 
-- `HERMES_GLOBAL_HOME` (optional): service-account global Hermes configuration and provider-secret home; defaults to `~/.hermes`. Never point it to the dedicated ACP profile. The global saved model/provider must resolve through installed Hermes with authorized credentials. No model availability claim is made.
-- `R1_WHISPER_MODELS`: local faster-whisper download/cache root, no automatic fetch.
-- `R1_KOKORO_ROOT`: isolated TTS venv and ONNX/voice asset directory.
-- `R1_TIMEZONE`: IANA timezone shared by calendar schemas, receipts and speech; default UTC. Set before process start. Invalid timezone fails startup/import. Restart your own bridge to change module-level schemas; never mix timezone values across components.
-- HA: `R1_ENABLE_HA=1`, `R1_HA_ORIGIN`, `R1_HA_TOKEN`. Exact HTTP(S) origin only, no path/query/userinfo. Use HTTPS or a separately secured local network transport. **This backend permits any discovered HA service the token can invoke, including security-sensitive services, without repeated confirmation.** Narrow rights with a dedicated account/token and do not enable if this authorization model is unsuitable. The visible legacy confirmation UI is not an enforced HA approval policy.
-- SiYuan: `R1_ENABLE_SIYUAN=1`, `SIYUAN_INTERNAL_URL` (or `SIYUAN_BASE_URL`), `SIYUAN_API_TOKEN`. Discovery/read/create/update/append/edit and exact childless-document deletion. Paths containing Private and root zArchive are excluded; that naming rule is not a comprehensive authorization system. Deletions have local rollback exports, which are sensitive.
-- Calendar: `R1_ENABLE_CALENDAR=1`, `MATON_AI_API_KEY`, explicit `R1_CALENDAR_ID`, optional `R1_MATON_CONNECTION_ID`. Uses the public Maton Google Calendar gateway. Dispatcher checks configured calendar ownership. List/read/create/update/delete; no bulk or recurring-series edits. Empty configuration is not live authorization verification. Credentials may grant broader upstream access than this adapter uses.
-- Research/mail: explicit CLI `--backend acp --enable-research`, server-only `TAVILY_API_KEY`, optional `EXA_API_KEY`, and `MATON_AI_API_KEY` with operator-pinned `R1_MAILBOX_ADDRESS` / `R1_MAILBOX_CONNECTION_ID`. No credential enables this CLI capability on its own. Tavily is default; Exa requires explicit current-user selection, never fallback. Mailbox search/read are GET-only; drafts remain conversation text, not saved or sent. See [scope and verification limits](WEB_MAIL.md). Mailbox scope is captured at module import; provide your private values before starting your own process. Do not put keys or account settings in the ACP profile.
-- TV: `R1_ENABLE_TVTIME=1`, explicit absolute `R1_TVTIME_SCRIPT`. Runs administrator-selected Python script once with no model-supplied arguments. No implementation of a household-specific TV workflow is included; supply and audit your own. Exit zero proves local command acceptance only, not physical readiness. The subprocess is a privileged trust boundary for the service account, not a sandbox.
+Exactly one transport is mandatory. Stdio argv is administrator-controlled and is never derived from a transcript. The child does not inherit `SARAH_*` or `R1_*` bridge settings. Other environment variables belong to the administrator-selected agent; run it with a deliberately restricted environment/account. Agent provider credentials belong to the agent, not a bridge integration.
 
-Optional backends passed directly to `make_app` are dependency injection for tests/embedding; the env enable gates apply to CLI discovery through `from_env`.
+Unknown `SARAH_*`/`R1_*` settings, old SiYuan/Maton integration settings and `HERMES_GLOBAL_HOME` fail startup rather than silently enabling or ignoring old product configuration. Legacy flags such as `--hermes-source`, `--backend`, and `--enable-research` are not accepted. No fixed launcher, policy handshake, profile, bootstrap, credentials lookup, model resolver or tool schema is installed. Generic agents may use their own tools, including search/mail, but Sarah never calls them on their behalf.
 
-No built-in retention/deletion scheduler for bridge media, transcripts or rollback exports exists. Establish a private lifecycle policy and backups. Revoke a device using `Store.revoke(device_id)` from a trusted local administrative script; no unauthenticated admin endpoint exists. Re-provision intentionally rather than overwriting state.
+## HTTP listener
+
+Direct TLS requires `--db PATH --cert PATH --key PATH`. Default bind is `127.0.0.1`, port 8787. TLS minimum is 1.2. Certificate/key files remain external and private. Choose a hostname/certificate trusted by the Android client; never disable hostname verification.
+
+Behind a trusted TLS proxy, use `--http --bind 127.0.0.1` (or literal `::1`) with no certificate flags. `localhost`, wildcard and non-loopback binds are refused in HTTP mode. Every route still requires a valid bearer token; proxy identity headers are not trusted. In containers, use host networking as in the review example or an equivalent design that preserves the loopback-only boundary; publishing a container's loopback port is not sufficient.
+
+Health is authenticated protocol 1 with `backend: acp`, `connected`, `ready` and a static explanation. It does not probe the socket, start the agent, download assets or call a provider. There are no integration capability flags or implicit fallback routes.
+
+## Speech assets
+
+STT uses local-only English Whisper `base`, CPU/int8, beam size 3 and VAD. TTS uses local CPU Kokoro (`af_heart`, speed 1.05, English) and FFmpeg/libmp3lame. Missing assets fail without download/fallback. Kokoro runs under its local environment's `python -I`, with a 20-second synthesis deadline. FFmpeg has a separate 20-second stage deadline; whole non-chunk speech is bounded by 45 seconds. The Dockerfile makes asset acquisition an explicit build-time operation; runtime never downloads models.

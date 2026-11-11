@@ -1,70 +1,56 @@
-"""Publication-default and privacy regression tests; all values synthetic."""
+"""Bridge-only export gate; tests never include live state or Android binary assets."""
 import importlib.util
-import os
 from pathlib import Path
-from unittest.mock import patch
-
-from bridge.ha import HADispatcher
-from bridge.siyuan import SiYuanDispatcher
-from bridge.calendar import CalendarDispatcher, ZONE
-from bridge.tvtime import TVTimeDispatcher
+import shutil
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('privacy_scan', ROOT/'tools/privacy_scan.py')
+spec = importlib.util.spec_from_file_location('privacy_scan', ROOT / 'tools/privacy_scan.py')
 scanner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scanner)
 
 
-def test_integrations_require_explicit_enable_even_with_credentials():
-    values = {'R1_HA_ORIGIN':'https://ha.example.invalid', 'R1_HA_TOKEN':'synthetic',
-              'SIYUAN_INTERNAL_URL':'https://notes.example.invalid', 'SIYUAN_API_TOKEN':'synthetic',
-              'MATON_AI_API_KEY':'synthetic', 'R1_CALENDAR_ID':'example-calendar',
-              'R1_TVTIME_SCRIPT':'/opt/sarah/bin/tvtime'}
-    with patch.dict(os.environ, values, clear=True):
-        assert all(cls.from_env() is None for cls in (HADispatcher, SiYuanDispatcher, CalendarDispatcher, TVTimeDispatcher))
-    assert ZONE == 'UTC'
+def test_manifest_is_complete_bridge_source_inventory():
+    entries = (ROOT / 'PUBLICATION-MANIFEST.txt').read_text().splitlines()
+    assert len(entries) == len(set(entries))
+    assert 'LICENSE' in entries
+    assert all(not path.startswith('android/') for path in entries)
+    for directory in ('bridge', 'tests', 'config', 'docs', 'tools'):
+        files = {path.relative_to(ROOT).as_posix() for path in (ROOT / directory).rglob('*')
+                 if path.is_file() and '__pycache__' not in path.parts}
+        assert files <= set(entries)
 
 
-def test_explicit_ha_and_notes_opt_in_construct_without_network():
-    with patch.dict(os.environ, {'R1_ENABLE_HA':'1','R1_HA_ORIGIN':'https://ha.example.invalid', 'R1_HA_TOKEN':'synthetic'}, clear=True):
-        assert isinstance(HADispatcher.from_env(), HADispatcher)
-    with patch.dict(os.environ, {'R1_ENABLE_SIYUAN':'1','SIYUAN_INTERNAL_URL':'https://notes.example.invalid','SIYUAN_API_TOKEN':'synthetic'}, clear=True):
-        assert isinstance(SiYuanDispatcher.from_env(), SiYuanDispatcher)
-
-
-def test_calendar_requires_explicit_scope():
-    import pytest
-    with patch.dict(os.environ, {'R1_ENABLE_CALENDAR':'1','MATON_AI_API_KEY':'synthetic'}, clear=True):
-        with pytest.raises(ValueError, match='calendar_id_required'):
-            CalendarDispatcher.from_env()
-    CalendarDispatcher('synthetic', 'example-calendar')
-
-
-def test_privacy_scan_positive_and_negative_controls(tmp_path):
-    (tmp_path/'PUBLICATION-MANIFEST.txt').write_text('PUBLICATION-MANIFEST.txt\nsource.py\n')
-    sample = tmp_path/'source.py'
-    sample.write_text('origin = "https://ha.example.invalid"\n')
+def test_staged_manifest_has_no_privacy_findings(tmp_path):
+    entries = (ROOT / 'PUBLICATION-MANIFEST.txt').read_text().splitlines()
+    for entry in entries:
+        source = ROOT / entry
+        destination = tmp_path / entry
+        assert source.is_file() and not source.is_symlink()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
     assert scanner.scan(tmp_path) == []
-    sample.write_text('private origin = "http://' + '.'.join(('10','20','30','40')) + '"\n')
-    assert any(kind == 'non-example-address' for _,_,kind in scanner.scan(tmp_path))
-    sample.write_text('synthetic-private-canary')
-    assert any(kind == 'private-literal' for _,_,kind in scanner.scan(tmp_path, ('synthetic-private-canary',)))
-    sample.unlink()
-    (tmp_path/'server.key').write_text('synthetic')
-    assert any(kind == 'private-or-generated-file' for _,_,kind in scanner.scan(tmp_path))
-    (tmp_path/'pointer').symlink_to(tmp_path/'server.key')
-    assert any(kind == 'symlink' for _,_,kind in scanner.scan(tmp_path))
 
 
-def test_project_mit_license_metadata():
-    import json
-    license_text = (ROOT / "LICENSE").read_text()
-    assert license_text.startswith("MIT License\n\nCopyright (c) 2026 serexe\n")
-    assert "Permission is hereby granted, free of charge" in license_text
+def test_packaging_uses_root_bridge_loopback_and_private_provisioning():
+    docker = (ROOT / 'Dockerfile').read_text()
+    entrypoint = ROOT / 'docker-entrypoint.sh'
+    compose = (ROOT / 'compose.example.yaml').read_text()
+    assert 'COPY bridge/ ./bridge/' in docker
+    assert 'COPY LICENSE THIRD-PARTY-NOTICES.md' in docker
+    assert 'USER sarah' in docker
+    assert 'sha256sum -c -' in docker
+    assert '127.0.0.1' in docker
+    assert 'umask 077' in entrypoint.read_text()
+    assert '--token-file "$key_path"' in entrypoint.read_text()
+    assert 'network_mode: host' in compose
+    assert 'read_only: true' in compose
+    assert entrypoint.stat().st_mode & 0o111
+    subprocess.run(['sh', '-n', str(entrypoint)], check=True)
+
+
+def test_original_copyright_and_permission_notice_preserved():
+    license_text = (ROOT / 'LICENSE').read_text()
+    assert 'Copyright (c) 2026 serexe' in license_text
+    assert 'The above copyright notice and this permission notice' in license_text
     assert 'THE SOFTWARE IS PROVIDED "AS IS"' in license_text
-    assert json.loads((ROOT / "manifest.json").read_text())["license"] == "MIT"
-    assert "LICENSE" in (ROOT / "PUBLICATION-MANIFEST.txt").read_text().splitlines()
-
-
-def test_public_source_privacy_hygiene():
-    assert scanner.scan(ROOT) == []

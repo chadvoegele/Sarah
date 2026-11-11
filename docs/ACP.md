@@ -1,37 +1,49 @@
-# Scoped Hermes ACP backend
+# ACP and HTTP contract
 
-`--backend acp` is the sole reasoning backend (also the default). `--backend codex` is rejected. ACP runs through a dedicated Sarah composition. No automatic fallback, reconnect replay or migration of earlier conversations occurs. This source port is not a device release or proof of this public deployment.
+## Generic ACP v1
 
-## Fixed, generic deployment contract
+The bridge connects by trusted Unix socket or administrator-selected stdio argv and exchanges newline-delimited JSON-RPC 2.0. No shell is involved.
 
-- Install compatible Hermes source at `/opt/hermes-agent`. The Python interpreter running the bridge must also have Hermes/ACP dependencies available: the child uses that exact `sys.executable`, never a shell or the stock broad `hermes acp` CLI.
-- Provision a separate private directory `/var/lib/sarah/acp` owned by the bridge service account, mode 0700, plus its `workspace` subdirectory. These are generic deployment paths, not supplied runtime state.
-- Deliberately copy the credential-free source template `bridge/sarah-acp.yaml` to that directory as `config.yaml`, mode 0600. Provision `SOUL.md`, mode 0600, with exactly the bytes of `bridge.acp_launcher.REVIEWED_SOUL`. Do not substitute a persona. Missing, altered or symlinked bootstrap files fail closed; `.env` and `AGENTS.md` are rejected. The launcher never repairs bootstrap content.
-- Configure your own global Hermes default model/provider and supported credentials separately under the bridge service account. The child reads the saved global default and scoped provider secrets when constructed; neither model nor credential is bundled in this repository. The dedicated profile is **not** a provider credential or OS sandbox. Supported shared OAuth pool bookkeeping may occur for OAuth providers.
-- Existing service invocations may retain `--backend acp`; `--backend codex` is invalid. ACP uses the fixed `/opt/hermes-agent` source contract. Start a **new conversation** after changing policy/source identity; active warm children do not hot-swap models.
+1. `initialize`: protocol version 1, empty client capabilities and Sarah client identity.
+2. `session/new` with configured absolute `cwd` and empty `mcpServers`, or `session/load` with the exact durable session ID when supported.
+3. Persist device/conversation/backend/session ownership before `session/prompt`.
+4. Submit only the current literal transcript as one text prompt. Stored dialogue is never replayed as executable prompt/history on reconnect.
+5. Collect current-session `agent_message_chunk` text only, requiring nonempty text and `end_turn`. Ignore thoughts, tool events, load-time history and recognized startup/UI extension notifications.
+6. Mark successful binding ready. On admitted timeout, disconnect, malformed/incomplete response, cancellation or crash, retain the session as unusable/uncertain. No prompt retry, replacement session or model fallback.
 
-The composition reads `model.provider` and `model.default` from the saved global Hermes configuration at new ACP child creation. It uses the installed Hermes resolver and only supported runtime API modes; missing/unsupported routes or extra headers fail closed. No fallback model/provider, context/memory/MCP inheritance, or automatic session replacement. Existing session ID/history survives restoration while the new child uses the then-current default; already-running children remain on their prior model. `HERMES_GLOBAL_HOME` can select an operator-controlled global config directory (default: service account `~/.hermes`); it must not be the dedicated ACP profile. Hermes internal API compatibility is not version-pinned by this publication. No model-inference request was made for this source commit.
+The client advertises no filesystem or terminal capability. `session/request_permission` returns cancelled; other agent-to-client requests, including `_sarah/dispatch`, return method-not-found. Agent-owned tools run under the agent's own authorization model, not through Sarah. Do not mistake client permission denial for a sandbox around that agent.
 
-## Permissions and persistence
+Limits: 256 KiB per frame, 4 MiB total protocol input, 8192 frames per prompt and 12000 assistant characters. Initialization/load also share bounded input counters and the whole configured ACP deadline. Warm transport counters/answer buffers reset between completed prompts. Stdio stderr is discarded and raw agent errors are never returned to Android. A best-effort `session/cancel` is followed by owned transport/process cleanup; cancellation cannot undo an action.
 
-The existing public-branch 22 tool schemas are preserved (18 original plus four research/mail): `calendar_create`, `calendar_delete`, `calendar_list`, `calendar_read`, `calendar_update`, `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services`, `sy_append`, `sy_create`, `sy_delete`, `sy_edit`, `sy_list_notebooks`, `sy_read`, `sy_search`, `sy_update`, `tvtime_on`. The four scoped research/mail schemas are `web_search`, `mailbox_search`, `mailbox_read`, `mailbox_draft`. Actual research dispatch requires explicit `--enable-research` with ACP and server-only configuration; schemas alone grant no access. See [web search and read-only mail](WEB_MAIL.md).
+## Authenticated HTTP protocol 1
 
-Schemas are not live authorization: existing public integration enable flags and server dispatchers still control actual access. Credentials alone do not opt in. No generic shell, filesystem, browser, administrative tools, client execution, MCP servers, blanket permission bypass or additional default tools are granted. Tool extension requires deliberate source/schema/dispatcher authorization, not merely enabling an inherited Hermes toolset. Permission requests are denied. Public calendar timezone is the one explicit nonsecret configuration forwarded to the child, preserving schema agreement.
+All routes require `Authorization: Bearer TOKEN`, including health and diagnostics. Responses use no-store caching policy. Auth failure and absent/unowned resources use 403; idempotency/admission conflicts use 409; unconfigured runtime uses 503. Each authenticated device has a 90-request/minute limit shared across polling, audio and control routes.
 
-Binding is durable per device/conversation plus backend/policy/source identity. Followups load the exact existing ACP session; missing, changed, inflight or uncertain sessions never become replacement sessions. Stop cancels and reaps owned child work, marks uncertain binding where appropriate and requires a fresh conversation. It cannot undo previously dispatched actions. Existing SQLite mutation slots and server-owned action receipts remain authoritative; model text or completion events cannot manufacture successful actions.
+| Method/path | Contract |
+| --- | --- |
+| `GET /v1/health` | Configuration-only readiness, protocol 1, `backend: acp`. |
+| `POST /v1/conversations` | Exact `{}` body; return new conversation ID (201). |
+| `POST /v1/turns` | WAV upload; `X-Conversation` and `Idempotency-Key` required; return turn ID (202). |
+| `GET /v1/requests/{request}` | Read-only owner-bound lookup by idempotency key. Never submits work. |
+| `GET /v1/turns/{turn}` | Owner-bound state/transcript/assistant text and audio availability. |
+| `GET /v1/turns/{turn}/audio` | Completed whole-response MP3 when available. |
+| `GET /v1/turns/{turn}/audio/{seq}` | Owner-bound sentence MP3 while stream is active. |
+| `POST /v1/turns/{turn}/cancel` | Exact `{}`; stop local work, never undo/replay. |
+| `POST /v1/diagnostics` | Strict opt-in schema-1 report; owner-bound receipt (201). |
+| `GET /v1/diagnostics/{code}` | Owner-bound recent report or 404. |
 
-Context files, soul identity, memory, user profile loading and skill creation nudges are disabled. This is not the main Hermes profile's memory/skills/context experience. It reuses Hermes' conversation/session engine with a narrowly composed capability set. The inert sentinel exists because installed Hermes can seed SOUL.md even when context loading is disabled.
+There is no confirmation, phone receipt, dispatch, model, tool, integration or arbitrary-proxy endpoint. `X-Clarification-Parent` is refused: clarification is ordinary assistant conversation with an explicit next user turn, not a local action/lease. No `phone_command`, tool or confirmation envelope is emitted.
 
-## Explicit legacy migration and current-clock context
+Uploads must be PCM WAV, signed 16-bit, mono/stereo, 16/44.1/48 kHz, 0.25–30 seconds and at most 4 MiB. A valid retry with the same key/bytes/conversation returns its original ID, never a new task. Different bytes/conversation conflict. One active voice job is admitted bridge-wide, including cleanup and sentence playback acknowledgement.
 
-Legacy completed bridge dialogue without an ACP binding is refused before agent connection with `acp_backend_requires_new_conversation`. The device receives a specific migration-required message; uncertain upstream failures retain the generic unknown-outcome warning. No request automatically migrates, retries or creates a replacement conversation.
+A turn envelope contains `id`, `conversation`, `state`, `detail`, `transcript`, `audio` and optionally `timings` or `audio_chunks`. States are `transcribing`, `thinking`, `speaking`, `done`, `error`, `cancelled`, `uncertain`. At `done`, `detail` is the original assistant text; speech-only Markdown/currency/time presentation does not modify saved text. `uncertain` is terminal and blocks new turns in that conversation. A post-prompt failure cannot be described as “nothing happened.”
 
-An operator may review `ACPRuntime.legacy_migration_plan(device=..., conversation=...)` and explicitly call `migrate_legacy` with that exact accepted digest and the dedicated profile's `SessionDB`. This imports literal completed user/assistant dialogue only, never failed requests or pending prompts. Migration seeds inert `sarah-acp` model metadata; session restore updates in-memory metadata to the child’s active default. Changed snapshots, existing bindings, ambiguous outcomes and partial imports fail closed. Back up and review the exact deployment first; this is not a generic rebind path for changed backend identities.
+## Sentence audio
 
-Each new model turn receives one UTC clock sample and its America/Chicago conversion, including the applicable daylight/standard offset. This API-facing context does not alter literal persisted user messages or the cached system prompt. It is a trusted host turn-start snapshot, not independent clock synchronization or a continuously updated playback-time clock. Compatible Hermes persistence APIs must support the literal-message override. Installed session restoration may reallocate internal message row IDs while preserving message content and tool fields; storage-ID stability is not promised.
+Opt in with `X-Audio-Chunks: sentence-mp3-v1`. Poll returns `audio_chunks: {count, complete}`. Chunks are numbered from zero and contain ordered MP3 sentences. Poll with `X-Audio-After: N` to acknowledge playback of the first N chunks. Acknowledgements must be monotonic and cannot exceed produced count. Two unacknowledged chunks maximum; at most 32 chunks/4 MiB total; a 240-second timeout covers generation and acknowledgement.
 
-## Verification limits
+The full assistant text is available in `detail` during speaking. After the final acknowledgement, the turn becomes done and ephemeral chunks are deleted; there is no combined MP3 in this mode. Whole-response MP3 output is also limited to 4 MiB. A client must not treat a transient chunk as a durable history attachment. TTS failure keeps the completed text, clears partial audio and does not retry the agent. Stop hides chunks immediately and joins actual generation cleanup before another voice admission.
 
-Focused synthetic tests cover durable followups/device isolation, denied permissions/client execution, exact dispatch binding/schema policy, transport loss/Stop without replay, inactive admission, and exact bootstrap bytes. An optional installed-composition fixture runs only when `/opt/hermes-agent` exists; it is not needed for ordinary offline tests. Source hashes prevent silently reusing sessions after changes.
+## Session compatibility
 
-Earlier separately accepted private activation proved actual provider/STT/TTS and a harmless lookup, not the sanitized public deployment. No new provider prompts, integration calls, native build, golden30 run, device acceptance, service changes or configuration activation were performed for publication. Native client, existing public integration guards and receipt logic remain unchanged. Configure and test your own deployment before enabling real action credentials.
+Backend identity includes a relay-version namespace and a digest of cwd/transport/argv, not argv secrets. Only conversations created by the new relay get its additive boundary marker. Old conversations remain inspectable but cannot be migrated or rebound automatically, even if their old IDs or endpoint configuration happen to match. Existing database tables/rows are not deleted. Create a new conversation explicitly; reconcile any prior uncertain actions outside Sarah first.

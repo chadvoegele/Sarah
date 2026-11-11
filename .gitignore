@@ -12,6 +12,8 @@
 *.key
 *.p12
 *.pfx
+*.token
+secrets/
 native-settings.json
 settings.json
 # Generated artifacts and private records

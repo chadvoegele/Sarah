@@ -1,0 +1,26 @@
+# Review-only example: supply existing state, agent socket and device key privately.
+services:
+  sarah:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SARAH_BACKEND: acp
+      SARAH_ACP_CWD: /workspace
+      SARAH_ACP_SOCKET: /run/acp/agent.sock
+      SARAH_ACP_TIMEOUT_SECONDS: "120"
+    volumes:
+      - /srv/sarah-state:/var/lib/sarah
+      - /srv/acp-socket:/run/acp:ro
+    secrets:
+      - sarah_api_key
+secrets:
+  sarah_api_key:
+    file: /etc/sarah/device.token

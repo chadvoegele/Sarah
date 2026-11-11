@@ -1,0 +1,8 @@
+# Use a real operator-controlled hostname and certificate policy before deployment.
+# Sarah authenticates every request itself. Do not log Authorization or bodies.
+voice.example.invalid {
+    request_body {
+        max_size 4MB
+    }
+    reverse_proxy 127.0.0.1:8789
+}

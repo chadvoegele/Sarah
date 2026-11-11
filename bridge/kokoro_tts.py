@@ -1,7 +1,7 @@
-"""R1-only local Kokoro worker. Run with isolated audition venv Python -I.
+"""Local Kokoro worker, launched with the isolated voice environment's Python -I.
 
-No network/download/provider fallback. One owned process per reply allows the
-bridge's existing deadline/cancellation path to terminate and reap synthesis.
+No network/download/provider fallback. The serialized warm worker is owned by
+WarmVoice; failure or cancellation terminates native synthesis and reaps it.
 """
 import argparse
 import os

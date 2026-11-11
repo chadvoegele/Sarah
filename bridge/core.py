@@ -1,20 +1,15 @@
-"""Narrow companion durable state; no provider or HA credentials here."""
+"""Companion durable state; no provider credentials here."""
 import hashlib
 import hmac
 import io
-import json
 import re
 import secrets
 import sqlite3
-import time
 import wave
 from pathlib import Path
 
 class Denied(ValueError):pass
 class Conflict(ValueError):pass
-
-def canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True)
 
 def ident(value):
     if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',value):raise Denied('invalid_identifier')
@@ -31,15 +26,10 @@ def validate_audio(data):
             return duration
     except (wave.Error,EOFError):raise Denied('invalid_wav') from None
 
-class BlockedHermes:
-    """Intentional closed seam. Not a simulated working Hermes integration.
-
-    Existing /v1/runs cannot prove reasoning fallback suppression and a
-    companion-specific dispatch policy. There is NO enable/unsafe override.
-    """
+class UnconfiguredRuntime:
+    """Fail closed unless a runtime is explicitly supplied."""
     ready=False
-    reason='hermes_ingress_security_extension_required'
-    def submit(self,*args,**kwargs):raise Denied(self.reason)
+    reason='runtime_not_configured'
 
 class Store:
     def __init__(self,path):
@@ -49,18 +39,9 @@ class Store:
         self.db.executescript('''PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, digest TEXT UNIQUE NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, device TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS relay_conversations(id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS turns(id TEXT PRIMARY KEY, device TEXT NOT NULL, conversation TEXT NOT NULL, request TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', transcript TEXT NOT NULL DEFAULT '', UNIQUE(device,request));
-        CREATE TABLE IF NOT EXISTS approvals(nonce TEXT PRIMARY KEY, device TEXT NOT NULL, turn TEXT NOT NULL, action TEXT NOT NULL, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS dispatches(device TEXT NOT NULL, turn TEXT NOT NULL, conversation TEXT NOT NULL, action TEXT NOT NULL, PRIMARY KEY(device,turn,action));
         ''')
-        # Existing turns remain closed; a single child can consume an explicit lease.
-        if not any(r['name']=='reply_expected' for r in self.db.execute('PRAGMA table_info(turns)')):
-            self.db.execute('ALTER TABLE turns ADD COLUMN reply_expected INTEGER NOT NULL DEFAULT 0')
-        if not any(r['name']=='clarification_parent' for r in self.db.execute('PRAGMA table_info(turns)')):
-            self.db.execute('ALTER TABLE turns ADD COLUMN clarification_parent TEXT')
-        if not any(r['name']=='reply_expected_until' for r in self.db.execute('PRAGMA table_info(turns)')):
-            self.db.execute('ALTER TABLE turns ADD COLUMN reply_expected_until REAL NOT NULL DEFAULT 0')
-        self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS one_clarification_child ON turns(device,clarification_parent) WHERE clarification_parent IS NOT NULL')
     def close(self):self.db.close()
     def provision(self,device,token):
         ident(device)
@@ -75,82 +56,51 @@ class Store:
     def revoke(self,device):self.db.execute('UPDATE devices SET revoked=1 WHERE id=?',(device,))
     def conversation(self,device):
         value=secrets.token_hex(16)
-        self.db.execute('INSERT INTO conversations VALUES(?,?)',(value,device));return value
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute('INSERT INTO conversations VALUES(?,?)',(value,device))
+            self.db.execute('INSERT INTO relay_conversations VALUES(?)',(value,))
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK');raise
+        return value
     def own(self,device,conversation):
         ident(conversation)
         if not self.db.execute('SELECT 1 FROM conversations WHERE id=? AND device=?',(conversation,device)).fetchone():raise Denied('not_found')
-    def admit(self,device,conversation,request,fingerprint,parent=None):
+    def admit(self,device,conversation,request,fingerprint):
         ident(request);self.own(device,conversation)
-        if parent is not None:ident(parent)
         self.db.execute('BEGIN IMMEDIATE')
         try:
             row=self.db.execute('SELECT * FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
             if row:
-                if row['conversation']!=conversation or row['fingerprint']!=fingerprint or row['clarification_parent']!=parent:raise Conflict('idempotency_key_conflict')
+                if row['conversation']!=conversation or row['fingerprint']!=fingerprint:raise Conflict('idempotency_key_conflict')
                 result=row['id']
             else:
                 if self.db.execute("SELECT 1 FROM turns WHERE conversation=? AND state NOT IN ('done','error','cancelled')",(conversation,)).fetchone():raise Conflict('conversation_busy_or_uncertain')
-                if parent is not None:
-                    prior=self.db.execute('SELECT id,device,state,reply_expected,reply_expected_until FROM turns WHERE conversation=? ORDER BY rowid DESC LIMIT 1',(conversation,)).fetchone()
-                    if prior is None or prior['id']!=parent or prior['device']!=device or prior['state']!='done' or prior['reply_expected']!=1 or prior['reply_expected_until']<=time.time() or self.db.execute('SELECT 1 FROM turns WHERE device=? AND clarification_parent=?',(device,parent)).fetchone():
-                        raise Denied('clarification_parent_invalid_or_consumed')
                 result=secrets.token_hex(16)
-                self.db.execute("INSERT INTO turns(id,device,conversation,request,fingerprint,state,clarification_parent) VALUES(?,?,?,?,?,'transcribing',?)",(result,device,conversation,request,fingerprint,parent))
+                self.db.execute("INSERT INTO turns(id,device,conversation,request,fingerprint,state) VALUES(?,?,?,?,?,'transcribing')",(result,device,conversation,request,fingerprint))
             self.db.execute('COMMIT');return result
         except BaseException:self.db.execute('ROLLBACK');raise
     def get(self,device,turn):
         ident(turn)
-        row=self.db.execute('SELECT id,conversation,state,detail,transcript,reply_expected FROM turns WHERE id=? AND device=?',(turn,device)).fetchone()
+        row=self.db.execute('SELECT id,conversation,state,detail,transcript FROM turns WHERE id=? AND device=?',(turn,device)).fetchone()
         if not row:raise Denied('not_found')
-        return {**dict(row),'reply_expected':row['state']=='done' and row['reply_expected']==1}
+        return dict(row)
     def by_request(self,device,request):
         ident(request)
-        row=self.db.execute('SELECT id,conversation,state,detail,transcript,reply_expected FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
+        row=self.db.execute('SELECT id,conversation,state,detail,transcript FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
         if not row:raise Denied('not_found')
-        return {**dict(row),'reply_expected':row['state']=='done' and row['reply_expected']==1}
-    def expect_reply(self,device,turn,conversation):
-        self.own(device,conversation)
-        result=self.db.execute("UPDATE turns SET reply_expected=1,reply_expected_until=? WHERE id=? AND device=? AND conversation=? AND state='speaking' AND NOT EXISTS (SELECT 1 FROM dispatches WHERE device=? AND turn=?) AND NOT EXISTS (SELECT 1 FROM approvals WHERE device=? AND turn=?)",
-            (time.time()+300,turn,device,conversation,device,turn,device,turn))
-        return result.rowcount==1
+        return dict(row)
     def finish(self,device,turn,state,detail,transcript=''):
         self.get(device,turn)
-        if state not in ('thinking','confirming','acting','speaking','done','error'):raise Denied('invalid_state')
+        if state not in ('thinking','speaking','done','error','uncertain'):raise Denied('invalid_state')
         self.db.execute("UPDATE turns SET state=?,detail=?,transcript=? WHERE id=? AND device=? AND state NOT IN ('cancelled','uncertain','done','error')",(state,detail,transcript,turn,device))
-    def cancel(self,device,turn,*,dispatch_pending=False):
+    def cancel(self,device,turn,*,agent_pending=False):
         self.get(device,turn)
-        state='uncertain' if dispatch_pending else 'cancelled'
-        detail=('Stopped during dispatch. Action outcome unknown. No automatic retry; reconciliation required.' if dispatch_pending else 'Cancelled locally. Does not undo already dispatched actions.')
-        self.db.execute("UPDATE turns SET state=?, detail=? WHERE id=? AND state NOT IN ('done','error','uncertain')",(state,detail,turn))
+        state='uncertain' if agent_pending else 'cancelled'
+        detail=('Stopped while agent was active. Outcome unknown; no automatic retry. Start a new conversation after reconciliation.'
+                if agent_pending else 'Cancelled locally. Does not undo actions already taken by the agent.')
+        self.db.execute("UPDATE turns SET state=?,detail=? WHERE id=? AND state NOT IN ('done','error','uncertain','cancelled')",(state,detail,turn))
         return self.get(device,turn)
     def recover(self):
         self.db.execute("UPDATE turns SET state='uncertain',detail='Interrupted. No automatic redispatch; reconciliation required.' WHERE state NOT IN ('done','error','cancelled','uncertain')")
-    def claim_dispatch(self,device,turn,conversation,action):
-        """Atomic durable per-turn action claim. Commit BEFORE network dispatch.
-
-        A crash after this claim is uncertain, never permission to replay.
-        """
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            row=self.get(device,turn)
-            self.own(device,conversation)
-            if row['conversation']!=conversation or row['state'] in ('done','error','cancelled','uncertain'):
-                raise Denied('turn_not_active')
-            result=self.db.execute('INSERT OR IGNORE INTO dispatches VALUES(?,?,?,?)',
-                                   (device,turn,conversation,canonical(action)))
-            if result.rowcount!=1:
-                self.db.execute('COMMIT');return False
-            self.db.execute("UPDATE turns SET state='acting',detail='Dispatching authorized routine action' WHERE id=? AND device=?",(turn,device))
-            self.db.execute('COMMIT');return True
-        except BaseException:
-            self.db.execute('ROLLBACK');raise
-    def offer(self,device,turn,action,now):
-        self.get(device,turn)
-        nonce=secrets.token_hex(32)
-        result=self.db.execute("INSERT INTO approvals SELECT ?,?,?,?,?,0 WHERE EXISTS (SELECT 1 FROM turns WHERE id=? AND device=? AND state NOT IN ('done','error','cancelled','uncertain'))",(nonce,device,turn,canonical(action),now+60,turn,device))
-        if result.rowcount!=1:raise Denied('turn_not_active')
-        return nonce
-    def claim(self,device,turn,nonce,action,now):
-        self.get(device,turn)
-        result=self.db.execute("UPDATE approvals SET used=1 WHERE nonce=? AND device=? AND turn=? AND action=? AND expires>? AND used=0 AND EXISTS (SELECT 1 FROM turns WHERE id=? AND device=? AND state NOT IN ('done','error','cancelled','uncertain'))",(nonce,device,turn,canonical(action),now,turn,device))
-        if result.rowcount!=1:raise Denied('confirmation_invalid_expired_or_replayed')

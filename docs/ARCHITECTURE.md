@@ -1,13 +1,36 @@
-# Architecture and trust boundaries
+# Architecture
 
-Client → HTTPS bearer-authenticated bridge → local STT → Codex conversation → optional explicitly configured dispatchers → local TTS → authenticated media download.
+```text
+[Android capture/wake]
+          |
+          v
+[HTTPS auth + HTTP API] -> [durable device/conversation/turn store]
+          |
+          v
+[local Whisper STT] -> [durable ACP session relay] -> [user-managed agent]
+                                                            |
+                                                            v
+[Android playback/text] <- [local Kokoro + FFmpeg] <- [assistant text]
+```
 
-API routes: `GET /v1/health`, `POST /v1/conversations`, `POST /v1/turns`, `GET /v1/requests/{request}`, `GET /v1/turns/{turn}`, `GET /v1/turns/{turn}/audio`, and turn `/cancel` and `/confirmation` POSTs. Health requires device authentication too. Audio upload requires `Content-Type: audio/wav`, `X-Conversation`, and `Idempotency-Key`.
+## Responsibilities
 
-SQLite stores devices as token hashes; conversations, turn transcript/detail and dispatch metadata are persisted. Restart marks unfinished turns uncertain, not replayable. Action claims are durable before dispatch; cancellation is not rollback. Model-generated success cannot override dispatcher receipts. Mixed mutation turns use server-owned receipts; pure read/conversation turns retain model prose. HA group success requires stable membership and all-member readback.
+Android owns audio capture, transport, playback and UI. The bridge authenticates ownership, stores turn status, transcribes audio and relays the literal transcript. The generic ACP agent owns all reasoning, context, provider access, skills/tools and action authorization. The bridge never dispatches agent tools or asks Android to execute assistant output.
 
-Runtime imports Hermes `agent.credential_pool.load_pool` and `agent.codex_headers.codex_cloudflare_headers` only when explicitly constructed at server startup. It is coupled to those internal APIs, not a generic Hermes HTTP endpoint. Tests bypass construction and provide synthetic pool/transport objects. Runtime uses only the fixed Codex backend origin; environment proxies and redirects are disabled. Model selection is configurable; account/model availability is not guaranteed.
+`core.Store` stores device token hashes, conversations and idempotent turns in SQLite. `relay_conversations` marks only conversations explicitly created by this implementation; old rows are never marked automatically. Legacy audit tables remain untouched. `acp_sessions` binds device/conversation to the digest of the transport/workspace identity and the exact agent session ID. Its `ready -> inflight -> ready/uncertain` transition is committed before prompting. Restart cannot convert `inflight` into permission to submit another prompt.
 
-Local speech model assets are not bundled or downloaded implicitly. Whisper defaults to `base`, CPU/int8, English. Kokoro defaults to `af_heart`, speed 1.05, `en-us`; an isolated subprocess is terminated/reaped on timeout/cancellation, and MP3 publication is atomic. Missing TTS yields text-only replies. Missing STT fails the turn.
+`acp_client` handles bounded ACP v1 NDJSON. Only assistant text for the current session during a prompt is collected. Thought/tool/history/extension notifications are not spoken. Client-side filesystem, terminals, permissions and private dispatch methods are unsupported or denied. There is no client tool executor. These restrictions do not sandbox the agent's own server-side tools; configure their authorization at the agent.
 
-The optional idle-power policy holds suspend for 3600 seconds after fresh physical input, with a hard 300-second active-operation cap. It has no network listener and never forces suspend/unlock. Installing a privileged helper changes power behavior and requires separate device review. Historical Wi-Fi repair/deployment programs and private observation tooling are intentionally not distributed.
+## Ownership and warm execution
+
+One voice job owns admission until all native/process cleanup completes. Cancelling a Python await does not stop Whisper's native thread, so the bridge retains the clip and admission slot until that thread finishes. Kokoro is a lazy serialized local worker, reused after success. Failure/cancellation kills and reaps it before reuse. FFmpeg output is published atomically from same-filesystem private scratch only after successful encoding.
+
+One ACP transport may stay warm for up to 300 idle seconds. Its key includes device, conversation, backend identity and session. Owner changes evict the transport and load the exact stored session, never a replacement. Errors/cancellation evict and poison an admitted session; successful eviction or idle expiry does not discard durable identity. Agents without `loadSession` may finish a warm conversation, but cannot resume it after eviction/restart.
+
+Sentence audio keeps the admission slot while producing/playing. At most two produced-but-unacknowledged chunks are retained, with a 240-second generation/ack deadline. There are at most 32 chunks and 4 MiB encoded output per sentence stream. Chunk filenames are private server-generated IDs, not model-provided paths. Cancellation hides output immediately, then joins cleanup. Optional TTS failure preserves completed assistant text and never re-prompts the agent.
+
+## Recovery and observability
+
+Active turns become `uncertain` during startup recovery. Existing uncertain or incompatible bindings fail closed; history is not replayed into new sessions. Read-only request lookup resolves lost acknowledgements without a new admission. Reuploading the same idempotency key and bytes returns the original turn; changed bytes/conversation conflict.
+
+Response metrics contain numeric durations and the fixed `acp` route only. Explicit opt-in diagnostics validate an allowlisted payload before writing, use owner-bound receipts, expire after seven days and enforce quotas. Normal request access logging is disabled. Conversation text/audio and diagnostic storage are still private data; operators must provide private state directories, backups and a retention policy.

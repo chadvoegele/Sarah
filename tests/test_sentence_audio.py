@@ -12,7 +12,7 @@ class ChunkHTTPTests(AioHTTPTestCase):
   class Adapter:
    ready=True
    def transcribe(self,path):return 'Tell a story'
-   async def reply(self,*args):return 'One. Two. Three.'
+   async def reply_turn(self,*args,**kwargs):return 'One. Two. Three.'
    async def speak(self,text,path):
     owner.generated.append(text)
     if owner.block and len(owner.generated)==2:

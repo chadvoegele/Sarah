@@ -1,116 +1,117 @@
-"""Bounded warm ACP lifecycle; synthetic stdio fixture, no model/home calls."""
+"""Warm transport stays bound to one durable generic ACP owner at a time."""
 import asyncio
+import unittest
 from unittest.mock import patch
-from test_runtime import ACPTests as Base
-from bridge.acp_client import ACPClient, ACPError
 
-class WarmACPTests(Base):
+from acp_fixture import ACPFixture
+from bridge.acp_client import ACPClient, ACPConfig, ACPError
+
+
+class WarmACPTests(ACPFixture, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.adapters=[]
-    async def asyncTearDown(self):
-        for a in self.adapters:
-            await a.close()
-    def adapter(self):
-        a=super().adapter();self.adapters.append(a);return a
-    def methods(self,name):
-        return [c for c in self.calls if c.get('method')==name]
-    async def test_two_prompts_one_exact_load_and_init(self):
-        a=self.adapter()
-        self.store.db.execute('INSERT INTO acp_sessions VALUES(?,?,?,?,?)',('a',self.conversation,self.config.identity,'known','ready'))
-        with patch.object(ACPClient,'connect',self.connect):
-            await self.bound(a);await self.bound(a)
-        self.assertEqual(len(self.clients),1)
-        self.assertEqual(len(self.methods('initialize')),1)
-        self.assertEqual(len(self.methods('session/load')),1)
-        self.assertEqual(self.methods('session/load')[0]['params']['sessionId'],'known')
-        self.assertEqual(len(self.methods('session/new')),0)
-        self.assertEqual(len(self.methods('session/prompt')),2)
-        self.assertIsNone(self.clients[0].dispatch)
-        self.assertIsNone(self.clients[0].turn_nonce)
-        self.assertNotEqual(*[c['params']['nonce'] for c in self.methods('_sarah/turn')])
-    async def test_isolation_eviction_ttl_shutdown(self):
-        a=self.adapter();a.IDLE_SECONDS=.01
-        with patch.object(ACPClient,'connect',self.connect):
-            await self.bound(a)
-            other=self.store.conversation('b')
-            await self.bound(a,device='b',conversation=other)
-            self.assertTrue(self.clients[0].writer.closed)
-            self.assertEqual(len(self.clients),2)
-            await asyncio.sleep(.04)
-            self.assertTrue(self.clients[1].writer.closed)
-            await self.bound(a,device='b',conversation=other)
-            self.assertEqual(len(self.methods('session/load')),1)
-            await a.close()
-            self.assertTrue(self.clients[-1].writer.closed)
-            with self.assertRaisesRegex(ACPError,'acp_worker_unavailable'):await self.bound(a,device='b',conversation=other)
-    async def test_stop_double_stop_no_replay(self):
-        a=self.adapter();self.stall=True
-        with patch.object(ACPClient,'connect',self.connect):
-            t=asyncio.create_task(self.bound(a));await self.entered.wait();t.cancel();t.cancel()
-            with self.assertRaises(asyncio.CancelledError):await t
-            self.assertTrue(self.clients[0].writer.closed)
-            self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions').fetchone()[0],'uncertain')
-            with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):await self.bound(a)
-            self.stall=False
-            await self.bound(a,conversation=self.store.conversation('a'))
-        self.assertEqual(len(self.methods('session/prompt')),2)
-    async def test_crash_and_policy_drift_no_replay(self):
-        a=self.adapter()
-        with patch.object(ACPClient,'connect',self.connect):
-            await self.bound(a);self.disconnect_prompt=True
-            with self.assertRaisesRegex(ACPError,'acp_disconnected'):await self.bound(a)
-            with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):await self.bound(a)
-        self.assertEqual(len(self.methods('session/prompt')),2)
-        self.assertEqual(len(self.clients),1)
-    async def test_policy_drift_evicts_before_connect(self):
-        a=self.adapter()
-        with patch.object(ACPClient,'connect',self.connect):await self.bound(a)
-        with patch('bridge.acp_policy.identity',return_value='changed'):
-            with patch.object(ACPClient,'connect',side_effect=AssertionError('no reconnect')):
-                with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):await self.bound(a)
-        self.assertTrue(self.clients[0].writer.closed)
-    async def test_stale_nonce_denied_current_owner_used(self):
-        from bridge.acp_policy import identity
-        c=await self.connect(self.config);c.session_id='known';c.collecting=True;c.turn_nonce='new'
-        seen=[]
-        async def dispatch(name,args):seen.append('new owner');return {'reply':'receipt'}
-        c.dispatch=dispatch
-        p={'sessionId':'known','policy':identity(),'name':'ha_get_state','arguments':{'entity_id':'light.test'},'nonce':'old'}
-        with self.assertRaisesRegex(ACPError,'acp_dispatch_binding_denied'):await c.handle_agent({'method':'_sarah/dispatch','id':'x','params':p})
-        p['nonce']='new';await c.handle_agent({'method':'_sarah/dispatch','id':'x','params':p})
-        self.assertEqual(seen,['new owner']);c.dispatch=None
-        with self.assertRaisesRegex(ACPError,'acp_dispatch_binding_denied'):await c.handle_agent({'method':'_sarah/dispatch','id':'x','params':p})
-        await c.close()
-    async def test_native_child_reaped_before_cancel_returns(self):
-        import sys
-        a=self.adapter();self.stall=True
-        process=await asyncio.create_subprocess_exec(sys.executable,'-c',
-            'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print("ready",flush=True);time.sleep(60)',
-            stdout=asyncio.subprocess.PIPE,start_new_session=True)
-        await process.stdout.readline()
-        async def connect(config):
-            c=await self.connect(config);c.process=process;return c
-        with patch.object(ACPClient,'connect',connect):
-            t=asyncio.create_task(self.bound(a));await self.entered.wait();t.cancel()
-            with self.assertRaises(asyncio.CancelledError):await t
-        self.assertIsNotNone(process.returncode)
-        self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions').fetchone()[0],'uncertain')
+        await super().asyncSetUp()
+        self.runtime.IDLE_SECONDS = 300
 
-    async def test_clock_literal_synced_once_between_warm_prompts(self):
-        from bridge.server import make_app
-        from types import SimpleNamespace
-        make_app(self.store,SimpleNamespace(ready=True))
-        a=self.adapter()
-        with patch.object(ACPClient,'connect',self.connect):
-            await self.bound(a)
-            t=self.store.admit('a',self.conversation,'clock','fixture')
-            self.store.finish('a',t,'done',"It's 1:00 PM CDT.",'What time is it?')
-            self.store.db.execute('INSERT INTO response_metrics VALUES(?,?,?)',(t,'direct_clock','{}'))
-            await self.bound(a);await self.bound(a)
-        contexts=[c['params']['dialogue'] for c in self.methods('_sarah/turn')]
-        self.assertEqual(contexts,[[],[{'role':'user','content':'What time is it?'},{'role':'assistant','content':"It's 1:00 PM CDT."}],[]])
-        self.assertTrue(all(c['params']['prompt'][0]['text']=='hello' for c in self.methods('session/prompt')))
+    def methods(self):
+        return [message['method'] for message in self.requests]
 
-for name in dir(Base):
-    if name.startswith('test_') and name not in WarmACPTests.__dict__:setattr(WarmACPTests,name,None)
-del Base
+    async def test_success_reuses_worker_without_replayed_answer_or_new_session(self):
+        self.assertEqual(await self.reply('first'), 'Reply: first café')
+        session = self.binding()['session']
+        self.assertEqual(await self.reply('second'), 'Reply: second café')
+        self.assertEqual(self.binding()['session'], session)
+        self.assertEqual(self.methods(), ['initialize', 'session/new', 'session/prompt', 'session/prompt'])
+        self.assertFalse(self.closed.is_set())
+        await self.runtime.close()
+        await asyncio.wait_for(self.closed.wait(), 1)
+        with self.assertRaisesRegex(ACPError, 'worker_unavailable'):
+            await self.reply()
+
+    async def test_owner_change_evicts_and_return_loads_exact_session(self):
+        first = self.conversation
+        await self.reply('one')
+        session = self.binding()['session']
+        other = self.store.conversation('two')
+        self.assertEqual(await self.runtime.reply_turn('two', [], device='two', conversation=other), 'Reply: two café')
+        self.assertEqual(await self.reply('return'), 'Reply: return café')
+        loads = [message['params']['sessionId'] for message in self.requests if message['method'] == 'session/load']
+        self.assertEqual(loads, [session])
+        self.assertEqual(self.conversation, first)
+        self.assertEqual(self.methods().count('session/new'), 2)
+
+    async def test_idle_expiry_closes_then_loads_not_replaces(self):
+        self.runtime.IDLE_SECONDS = .02
+        await self.reply('first')
+        session = self.binding()['session']
+        await asyncio.wait_for(self.closed.wait(), 1)
+        self.assertEqual(await self.reply('second'), 'Reply: second café')
+        self.assertEqual(self.binding()['session'], session)
+        self.assertEqual(self.methods().count('session/new'), 1)
+        self.assertEqual(self.methods().count('session/load'), 1)
+
+    async def test_warm_error_poison_closes_and_never_reprompts(self):
+        await self.reply('first')
+        self.mode = 'drop'
+        with self.assertRaises(ACPError):
+            await self.reply('second')
+        self.assertEqual(self.binding()['state'], 'uncertain')
+        self.assertIsNone(self.runtime._worker)
+        with self.assertRaisesRegex(ACPError, 'uncertain'):
+            await self.reply('never send')
+        self.assertEqual(self.methods().count('session/prompt'), 2)
+
+    async def test_warm_cancel_is_uncertain_and_reaps_before_return(self):
+        await self.reply('first')
+        self.started.clear()
+        self.mode = 'stall'
+        task = asyncio.create_task(self.reply('second'))
+        await asyncio.wait_for(self.started.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(self.cancelled.wait(), 1)
+        await asyncio.wait_for(self.closed.wait(), 1)
+        self.assertEqual(self.binding()['state'], 'uncertain')
+        self.assertIsNone(self.runtime._worker)
+
+    async def test_inflight_owner_rejects_other_turn_without_queuing(self):
+        self.mode = 'stall'
+        task = asyncio.create_task(self.reply('first'))
+        await asyncio.wait_for(self.started.wait(), 1)
+        try:
+            with self.assertRaisesRegex(ACPError, 'worker_unavailable'):
+                await self.reply('never queue')
+            self.assertEqual(self.methods().count('session/prompt'), 1)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_metadata_limit_resets_per_prompt_but_not_per_frame(self):
+        await self.reply('first')
+        self.mode = 'metadata_flood'
+        with patch.object(ACPClient, 'MAX_FRAMES', 5):
+            with self.assertRaisesRegex(ACPError, 'stream_limit'):
+                await self.reply('second')
+        self.assertEqual(self.binding()['state'], 'uncertain')
+
+    async def test_config_change_cannot_use_cached_session(self):
+        await self.reply('first')
+        self.runtime.config = ACPConfig(str(self.root/'other'), socket=self.socket)
+        with self.assertRaisesRegex(ACPError, 'changed'):
+            await self.reply('never send')
+        self.assertEqual(self.methods().count('session/prompt'), 1)
+
+    async def test_legacy_conversation_never_imported_even_without_history(self):
+        self.store.db.execute('DELETE FROM relay_conversations WHERE id=?', (self.conversation,))
+        with self.assertRaisesRegex(ACPError, 'new_conversation'):
+            await self.reply()
+        self.assertEqual(self.requests, [])
+        self.conversation = self.store.conversation('one')
+        self.assertEqual(await self.reply(), 'Reply: hello café')
+
+    async def test_completed_history_cannot_be_bypassed_by_empty_argument(self):
+        turn = self.store.admit('one', self.conversation, 'legacy-done', 'synthetic')
+        self.store.finish('one', turn, 'done', 'old answer', 'old request')
+        with self.assertRaisesRegex(ACPError, 'new_conversation'):
+            await self.reply()
+        self.assertEqual(self.requests, [])

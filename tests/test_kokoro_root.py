@@ -77,20 +77,21 @@ class KokoroParentRoot(unittest.IsolatedAsyncioTestCase):
                 root = base / ('.build/kokoro-audition' if override is None else override)
                 calls = []
 
+                from bridge.warm_voice import WarmVoice
+                async def synth(worker, text, output):
+                    calls.append((worker.python, worker.script, text))
+                    output.write_bytes(b'synthetic wav')
                 async def process(*args, **kwargs):
-                    calls.append(args)
-                    if args[0] == '/usr/bin/ffmpeg':
-                        Path(args[-1]).write_bytes(b'synthetic encoded audio')
+                    Path(args[-1]).write_bytes(b'synthetic encoded audio')
 
                 with patch.dict(os.environ, {}, clear=True), \
                         patch.object(runtime, '__file__', str(base / 'bridge/runtime.py')), \
+                        patch.object(WarmVoice, 'synthesize', synth), \
                         patch.object(runtime, '_tts_process', process):
                     if override is not None:
                         os.environ['R1_KOKORO_ROOT'] = str(root)
                     target = base / 'out.mp3'
                     await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak('Hello.', target)
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(calls[0][:4], (
-                    str(root / 'venv/bin/python'), '-I',
-                    str(base / 'bridge/kokoro_tts.py'), '--output'))
+                self.assertEqual(calls, [(str(root / 'venv/bin/python'),
+                                         str(base / 'bridge/kokoro_tts.py'), 'Hello.')])
                 self.assertEqual(target.read_bytes(), b'synthetic encoded audio')

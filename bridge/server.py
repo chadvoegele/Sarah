@@ -1,340 +1,329 @@
-"""Private TLS companion. Scoped ACP + local STT/TTS + opt-in exact HA."""
+"""Authenticated speech transport. Reasoning and action authorization belong to ACP."""
 import argparse
 import asyncio
 import hashlib
+import ipaddress
 import json
 import ssl
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+
 from aiohttp import web
-from .core import BlockedHermes, Conflict, Denied, Store, validate_audio, canonical
-from .direct_clock import direct_clock
-from .web_mail import ResearchTurn, NAMES as RESEARCH_NAMES
+
+from .core import Conflict, Denied, Store, UnconfiguredRuntime, validate_audio
 
 
-def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None, research=None):
-    adapter = adapter or BlockedHermes()
-    # Durations only; no transcript, audio, identity or upstream error logging.
+def make_app(store, adapter=None):
+    adapter = adapter or UnconfiguredRuntime()
     store.db.execute('CREATE TABLE IF NOT EXISTS response_metrics(turn TEXT PRIMARY KEY, route TEXT NOT NULL, timings TEXT NOT NULL)')
-    buckets=defaultdict(deque); tasks={}; confirmations={}; dispatching=set(); streams={}
-    media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
+    buckets = defaultdict(deque)
+    tasks, streams = {}, {}
+    reasoning = set()
+    media = store.path.parent / 'media'
+    media.mkdir(mode=0o700, exist_ok=True)
+    media.chmod(0o700)
+
     @web.middleware
-    async def guard(request,handler):
+    async def guard(request, handler):
         try:
-            auth=request.headers.get('Authorization','')
-            if not auth.startswith('Bearer '):raise Denied('unauthorized')
-            device=store.authenticate(auth[7:])
-            q=buckets[device];now=time.monotonic()
-            while q and q[0]<now-60:q.popleft()
-            if len(q)>=90:return web.json_response({'error':'rate_limited'},status=429)
-            q.append(now);request['device']=device
-            response=await handler(request)
-        except Denied as e:response=web.json_response({'error':str(e)},status=403)
-        except Conflict as e:response=web.json_response({'error':str(e)},status=409)
-        except (json.JSONDecodeError,UnicodeDecodeError,TypeError,KeyError):response=web.json_response({'error':'invalid_request'},status=400)
-        response.headers['Cache-Control']='no-store';response.headers['X-Content-Type-Options']='nosniff'
+            auth = request.headers.get('Authorization', '')
+            if not auth.startswith('Bearer '):
+                raise Denied('unauthorized')
+            device = store.authenticate(auth[7:])
+            bucket, now = buckets[device], time.monotonic()
+            while bucket and bucket[0] < now - 60:
+                bucket.popleft()
+            if len(bucket) >= 90:
+                response = web.json_response({'error': 'rate_limited'}, status=429)
+            else:
+                bucket.append(now)
+                request['device'] = device
+                response = await handler(request)
+        except Denied as error:
+            response = web.json_response({'error': str(error)}, status=403)
+        except Conflict as error:
+            response = web.json_response({'error': str(error)}, status=409)
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError):
+            response = web.json_response({'error': 'invalid_request'}, status=400)
+        except web.HTTPException as error:
+            reason = {404: 'not_found', 413: 'request_too_large'}.get(error.status, 'http_error')
+            response = web.json_response({'error': reason}, status=error.status)
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
         return response
-    app=web.Application(client_max_size=4*1024*1024,middlewares=[guard])
-    async def body(request,keys):
-        value=await request.json()
-        if not isinstance(value,dict) or set(value)!=set(keys):raise Denied('unexpected_fields')
-        return value
+
+    app = web.Application(client_max_size=4*1024*1024, middlewares=[guard])
+
+    async def empty_body(request):
+        if await request.json() != {}:
+            raise Denied('unexpected_fields')
+
     async def health(request):
-        reason='Codex voice conversation with full Home Assistant tools on every turn; model interprets natural language and conversation context. Discover actual entities, room groups, detailed state and services across all HA domains. Requested services run without repeated routine approval or entity/action authorization gates. Group outcomes require discovered unchanged membership and every member readback. Accepted services are not automatically verified; uncertain outcomes never auto-retried. No shell or arbitrary network tool.' if ha is not None else getattr(adapter,'reason','')
-        if siyuan is not None: reason+=' SiYuan discovery/search/read/create/stable-ID update/append/edit and exact childless document deletion; writes verified by readback, deletion locally backed up. Private and root zArchive excluded.'
-        if calendar is not None: reason+=' Calendar enabled for explicitly configured scope; list/read/create/update/exact delete with readback. Configuration is not live scope verification.'
-        if tvtime is not None: reason+=' TV time ON uses existing canonical workflow once; webhook accepted is not device readiness proof.'
-        if getattr(adapter,'backend',None)=='acp': reason=adapter.reason+' Existing HA/SiYuan/calendar/TV grants preserved; server-owned mutation receipts, not model completion, establish action outcomes.'
-        if research is not None: reason+=' Tavily default web search; Exa only on explicit current-user request, no fallback. Exact Hermes mailbox search/read and conversation-only drafts; no mail mutation. Research turns cannot dispatch unrelated tools; later user-authorized turns keep existing integrations.'
-        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':2,'clarification_reply_expected':True,'tools':bool(adapter.ready) and any(b is not None for b in (ha,siyuan,calendar,tvtime,research)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None,'web_search':research is not None and bool(research.tavily_key),'exa_explicit_only':research is not None and bool(research.exa_key),'mailbox':research is not None and bool(research.key),'mailbox_draft':research is not None})
+        return web.json_response({'connected': True, 'ready': bool(adapter.ready),
+                                  'reason': getattr(adapter, 'reason', ''),
+                                  'protocol': 1, 'backend': 'acp'})
+
     async def conversation(request):
-        await body(request,[])
-        return web.json_response({'conversation':store.conversation(request['device'])},status=201)
-    def active(device,turn):return store.get(device,turn)['state'] not in ('done','error','cancelled','uncertain')
+        await empty_body(request)
+        return web.json_response({'conversation': store.conversation(request['device'])}, status=201)
+
+    def active(device, turn):
+        return store.get(device, turn)['state'] not in ('done', 'error', 'cancelled', 'uncertain')
+
     async def transcribe(clip):
-        # Cancelling to_thread's await does not stop native STT. Keep the real
-        # worker, clip and admission slot owned until the thread has finished.
-        worker=asyncio.create_task(asyncio.to_thread(adapter.transcribe,clip))
+        # Native STT cannot be cancelled by cancelling to_thread's await.
+        worker = asyncio.create_task(asyncio.to_thread(adapter.transcribe, clip))
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
             while not worker.done():
-                try: await asyncio.shield(worker)
-                except asyncio.CancelledError: pass
-                except Exception: break
-            if not worker.cancelled(): worker.exception()
-            raise
-    def released(device,turn,clip,task):
-        # Also runs if Stop wins before execute's first instruction.
-        clip.unlink(missing_ok=True);tasks.pop(turn,None);confirmations.pop(turn,None)
-        if turn in streams:
-            streams.pop(turn,None)
-            for seq in range(32):(media/(turn+'.'+str(seq)+'.mp3')).unlink(missing_ok=True)
-        if store.get(device,turn)['state']!='done':
-            (media/(turn+'.mp3')).unlink(missing_ok=True)
-            for seq in range(32):(media/(turn+'.'+str(seq)+'.mp3')).unlink(missing_ok=True)
-            streams.pop(turn,None)
-    async def execute(device,turn,clip,admitted,upload_ms,chunked=False):
-        transcript=''
-        started=time.monotonic();timings={'upload_read_ms':upload_ms,'queue_ms':(started-admitted)*1000};route='model'
-        try:
-            transcript=await transcribe(clip)
-            timings['stt_ms']=(time.monotonic()-started)*1000
-            if not active(device,turn):return
-            store.finish(device,turn,'thinking','S.A.R.A.H is thinking.',transcript)
-            conversation=store.get(device,turn)['conversation']
-            clarification_parent=store.db.execute('SELECT clarification_parent FROM turns WHERE device=? AND id=?',(device,turn)).fetchone()['clarification_parent']
-            rows=store.db.execute("SELECT transcript,detail FROM turns WHERE device=? AND conversation=? AND state='done' ORDER BY rowid DESC LIMIT 4",(device,conversation)).fetchall()
-            history=[]
-            for row in reversed(rows):history.extend([{'role':'user','content':row['transcript']},{'role':'assistant','content':row['detail']}])
-            async def confirm(action):
-                binding={'conversation':conversation,'action':action}
-                digest=hashlib.sha256(canonical(binding).encode()).hexdigest()
-                nonce=store.offer(device,turn,binding,time.time())
-                future=asyncio.get_running_loop().create_future()
-                envelope={'conversation':conversation,'nonce':nonce,'action_hash':digest,'expires':time.time()+60,
-                          'label':action['arguments']['entity_id']+' '+action['arguments']['service']}
-                confirmations[turn]=(device,binding,envelope,future)
-                store.finish(device,turn,'confirming','Confirm exact routine action on screen',transcript)
                 try:
-                    accepted=await asyncio.wait_for(future,60)
-                    permitted=accepted and active(device,turn)
-                    if active(device,turn): store.finish(device,turn,'acting' if permitted else 'thinking','Dispatching confirmed routine action' if permitted else 'Action denied. Preparing reply.',transcript)
-                    return permitted
-                except TimeoutError:
-                    if active(device,turn): store.finish(device,turn,'thinking','Confirmation expired. Nothing dispatched.',transcript)
-                    return False
-                finally: confirmations.pop(turn,None)
-            outcomes=[]; read_results=[]
-            previous=store.db.execute("SELECT transcript FROM turns WHERE device=? AND conversation=? AND state='done'",(device,conversation)).fetchall() if research is not None else []
-            research_history=any((lambda t:t.web_intent or t.mail_intent)(ResearchTurn(row['transcript'])) for row in previous)
-            research_turn=ResearchTurn(transcript,research_history=research_history)
-            async def dispatch(name,args):
-                if not active(device,turn): return {'reply':'Request cancelled. Nothing further dispatched.'}
-                if clarification_parent is not None and name not in ('ha_list_entities','ha_get_state','ha_list_services','sy_list_notebooks','sy_search','sy_read','calendar_list','calendar_read','web_search','mailbox_search','mailbox_read'):
-                    outcome={'error':'clarification_action_requires_new_command','reply':'Action not dispatched from spoken clarification. Ask a new command or use on-screen confirmation.'}
-                    outcomes.append(outcome)
-                    return outcome
-                if research is not None:
-                    try: research_turn.admit(name,args)
-                    except Denied as error:
-                        outcome={'error':str(error),'reply':'Tool denied ('+str(error)+'). Nothing dispatched. Use a separate explicit user turn for unrelated tools; web queries must come from current user text.'}
-                        read_results.append(outcome)
-                        return outcome
-                async def claim(action):
-                    if not active(device,turn): return False
-                    # New note/calendar mutations consume one durable turn slot,
-                    # even if a model changes arguments after an uncertain result.
-                    if store.db.execute('SELECT 1 FROM dispatches WHERE device=? AND turn=? LIMIT 1',(device,turn)).fetchone(): return False
-                    claimed=store.claim_dispatch(device,turn,conversation,action)
-                    if claimed: dispatching.add(turn)
-                    return claimed
-                backend=research if name in RESEARCH_NAMES else tvtime if name == 'tvtime_on' else siyuan if name.startswith('sy_') else calendar if name.startswith('calendar_') else ha
-                try:
-                    outcome=await backend.dispatch(name,args,claim) if backend is not None else {'reply':'Requested tool unavailable. Nothing dispatched.'}
-                finally:
-                    dispatching.discard(turn)
-                # Snapshot actual dispatcher output before giving it to runtime.
-                # Model text/JSON and runtime return values cannot add outcomes.
-                if (name in RESEARCH_NAMES and name != 'mailbox_draft') or name in ('ha_list_entities','ha_get_state','ha_list_services','sy_list_notebooks','sy_search','sy_read','calendar_list','calendar_read'):
-                    if research is not None and name in RESEARCH_NAMES: research_turn.observe(name,outcome)
-                    read_results.append(outcome)
-                else:
-                    outcomes.append(dict(outcome))
-                return outcome
-            # User-approved exception: exact standalone time/date, no tools.
-            reply_started=time.monotonic()
-            reply_expected=False
-            text=direct_clock(transcript)
-            if text is not None:
-                if hasattr(adapter, 'check_direct_reply'):
-                    adapter.check_direct_reply(device=device,conversation=conversation)
-                route='direct_clock'
-                store.db.execute('INSERT OR REPLACE INTO response_metrics VALUES(?,?,?)',(turn,route,'{}'))
-            elif hasattr(adapter, 'reply_turn'):
-                text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation,
-                                              dispatch=dispatch if bool(adapter.ready) else None,
-                                              clarification=lambda answer: adapter.clarification_intent(
-                                                  device=device,conversation=conversation,utterance=transcript,answer=answer)
-                                                  if hasattr(adapter,'clarification_intent') else False)
-                if isinstance(text,tuple) and len(text)==2 and type(text[0]) is str and type(text[1]) is bool:
-                    text,reply_expected=text
-            else:
-                text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime,research)) else await adapter.reply(transcript,history)
-            timings['reply_ms']=(time.monotonic()-reply_started)*1000
-            timings['model_ms']=timings['reply_ms'] if route=='model' else 0.0
-            if not active(device,turn):return
-            # Actual dispatch outcomes remain server-owned. With no tool outcome,
-            # preserve conversation/clarification exactly; never invent an action
-            # receipt or replace free conversation with a fixed no-outcome phrase.
-            if outcomes:
-                receipts=' '.join(o['reply'] for o in outcomes)
-                # Action turns use server-owned narration, even with mixed reads.
-                # Untrusted synthesis can contradict a receipt; appending cannot fix it.
-                # Pure read/conversation turns retain natural model prose unchanged.
-                text=receipts
-            errors=[o['reply'] for o in read_results if o.get('error')]
-            if errors:text+='\n'+' '.join(errors)
-            reply_expected=(reply_expected and route=='model' and not outcomes and not errors
-                and not read_results and not store.db.execute('SELECT 1 FROM approvals WHERE device=? AND turn=?',(device,turn)).fetchone()
-                and not store.db.execute('SELECT 1 FROM dispatches WHERE device=? AND turn=?',(device,turn)).fetchone())
-            store.finish(device,turn,'speaking','Preparing spoken reply',transcript)
-            tts_started=time.monotonic()
-            if chunked:
-                from .warm_voice import sentence_chunks
-                stream=streams[turn]={'count':0,'after':0,'complete':False}
-                store.finish(device,turn,'speaking',text,transcript)
-                total=0
-                async with asyncio.timeout(240):
-                    for seq,chunk in enumerate(sentence_chunks(text)):
-                        # Two produced-but-unplayed chunks maximum; retain admission.
-                        while stream['count']-stream['after'] >= 2:
-                            await asyncio.sleep(.05)
-                        target=media/(turn+'.'+str(seq)+'.mp3')
-                        await adapter.speak(chunk,target)
-                        total += target.stat().st_size
-                        if total > 4*1024*1024:raise RuntimeError('chunk_audio_limit')
-                        stream['count'] += 1
-                        if seq==0:timings['first_mp3_ms']=(time.monotonic()-tts_started)*1000
-                    stream['complete']=True
-                    while stream['after'] < stream['count']:
-                        await asyncio.sleep(.05)
-            else:
-                try:await asyncio.wait_for(adapter.speak(text,media/(turn+'.mp3')),timeout=45)
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    pass
                 except Exception:
-                    (media/(turn+'.mp3')).unlink(missing_ok=True)
-                    # Text remains usable when optional free TTS unavailable.
-            timings['tts_ms']=(time.monotonic()-tts_started)*1000
-            if active(device,turn):
-                if reply_expected:store.expect_reply(device,turn,conversation)
-                store.finish(device,turn,'done',text,transcript)
-        except Exception as e:
-            # Only this exact local pre-connect refusal proves no dispatch.
-            # Never expose arbitrary upstream errors or label unknown turns safe.
+                    break
+            if not worker.cancelled():
+                worker.exception()
+            raise
+
+    def clear_chunks(turn):
+        streams.pop(turn, None)
+        for seq in range(32):
+            (media / f'{turn}.{seq}.mp3').unlink(missing_ok=True)
+
+    def released(device, turn, clip, task):
+        # Covers Stop before execute's first instruction as well as native cleanup.
+        clip.unlink(missing_ok=True)
+        tasks.pop(turn, None)
+        clear_chunks(turn)
+        if store.get(device, turn)['state'] != 'done':
+            (media / f'{turn}.mp3').unlink(missing_ok=True)
+
+    async def speak_chunks(turn, text, timings):
+        from .warm_voice import sentence_chunks
+        stream = streams[turn] = {'count': 0, 'after': 0, 'complete': False}
+        total, started = 0, time.monotonic()
+        async with asyncio.timeout(240):
+            for seq, chunk in enumerate(sentence_chunks(text)):
+                while stream['count'] - stream['after'] >= 2:
+                    await asyncio.sleep(.05)
+                target = media / f'{turn}.{seq}.mp3'
+                await adapter.speak(chunk, target)
+                size = target.stat().st_size
+                total += size
+                if size == 0 or total > 4*1024*1024:
+                    raise RuntimeError('chunk_audio_limit')
+                stream['count'] += 1
+                if seq == 0:
+                    timings['first_mp3_ms'] = (time.monotonic() - started)*1000
+            stream['complete'] = True
+            while stream['after'] < stream['count']:
+                await asyncio.sleep(.05)
+
+    async def execute(device, turn, clip, admitted, upload_ms, chunked=False):
+        transcript = ''
+        started = time.monotonic()
+        timings = {'upload_read_ms': upload_ms, 'queue_ms': (started-admitted)*1000}
+        try:
+            transcript = await transcribe(clip)
+            timings['stt_ms'] = (time.monotonic()-started)*1000
+            if not active(device, turn):
+                return
+            store.finish(device, turn, 'thinking', 'Sarah is thinking.', transcript)
+            conv = store.get(device, turn)['conversation']
+            rows = store.db.execute("SELECT transcript,detail FROM turns WHERE device=? AND conversation=? AND state='done' ORDER BY rowid DESC LIMIT 4", (device, conv)).fetchall()
+            history = [message for row in reversed(rows) for message in (
+                {'role': 'user', 'content': row['transcript']},
+                {'role': 'assistant', 'content': row['detail']})]
+            reply_started = time.monotonic()
+            reasoning.add(turn)
+            try:
+                text = await adapter.reply_turn(transcript, history, device=device, conversation=conv)
+            finally:
+                reasoning.discard(turn)
+            timings['reply_ms'] = (time.monotonic()-reply_started)*1000
+            if not isinstance(text, str) or not text.strip() or len(text) > 12000:
+                raise ValueError('invalid_assistant_text')
+            if not active(device, turn):
+                return
+            store.finish(device, turn, 'speaking', text, transcript)
+            tts_started = time.monotonic()
+            try:
+                if chunked:
+                    await speak_chunks(turn, text, timings)
+                else:
+                    target = media / f'{turn}.mp3'
+                    await asyncio.wait_for(adapter.speak(text, target), timeout=45)
+                    if not 0 < target.stat().st_size <= 4*1024*1024:
+                        raise RuntimeError('reply_audio_limit')
+            except Exception:
+                # Never retry the agent because optional speech failed.
+                clear_chunks(turn)
+                (media / f'{turn}.mp3').unlink(missing_ok=True)
+                timings['tts_failed'] = 1
+            timings['tts_ms'] = (time.monotonic()-tts_started)*1000
+            if active(device, turn):
+                store.finish(device, turn, 'done', text, transcript)
+        except Exception as error:
             from .acp_client import ACPError
-            if isinstance(e, ACPError) and str(e) == 'acp_backend_requires_new_conversation':
-                detail=('ACP conversation migration required (acp_backend_requires_new_conversation). '
-                        'Existing conversation history preserved. Request not sent to agent; nothing dispatched. '
-                        'No automatic retry. Explicit server migration required before a new request.')
+            if isinstance(error, ACPError) and str(error) == 'acp_backend_requires_new_conversation':
+                detail = ('This conversation is incompatible with the generic ACP relay. History is preserved; '
+                          'request not sent. Start a new conversation; no migration or automatic replay.')
+                state = 'error'
             else:
-                detail='Voice request failed ('+type(e).__name__+'). Any dispatched action outcome may be unknown; no automatic retry.'
-            if active(device,turn):store.finish(device,turn,'error',detail,transcript)
+                detail = ('Voice request failed (' + type(error).__name__ + '). Agent outcome may be unknown; '
+                          'no automatic retry. Reconcile with your agent; start a new conversation if uncertain.')
+                state = 'uncertain' if getattr(adapter, 'session_uncertain', lambda **kw: False)(device=device, conversation=store.get(device, turn)['conversation']) else 'error'
+            if active(device, turn):
+                store.finish(device, turn, state, detail, transcript)
         finally:
-            timings['server_ms']=(time.monotonic()-admitted)*1000
+            timings['server_ms'] = (time.monotonic()-admitted)*1000
             store.db.execute('INSERT OR REPLACE INTO response_metrics VALUES(?,?,?)',
-                             (turn,route,json.dumps({k:round(v,3) for k,v in timings.items()})))
+                             (turn, 'acp', json.dumps({k: round(v, 3) for k, v in timings.items()})))
 
     async def submit(request):
-        if not adapter.ready:return web.json_response({'error':adapter.reason},status=503)
-        if request.content_type!='audio/wav':raise Denied('audio_content_type')
-        device=request['device'];conversation=request.headers.get('X-Conversation','');key=request.headers.get('Idempotency-Key','')
-        parent=request.headers.get('X-Clarification-Parent')
-        store.own(device,conversation)
-        upload_started=time.monotonic()
-        data=await request.read();validate_audio(data)
-        upload_ms=(time.monotonic()-upload_started)*1000
-        fingerprint=hashlib.sha256(data).hexdigest()
-        existing=store.db.execute('SELECT id FROM turns WHERE device=? AND request=?',(device,key)).fetchone()
-        if not existing and tasks:raise Conflict('voice_worker_busy')
-        turn=store.admit(device,conversation,key,fingerprint,parent=parent)
+        if not adapter.ready:
+            return web.json_response({'error': adapter.reason}, status=503)
+        if request.content_type != 'audio/wav':
+            raise Denied('audio_content_type')
+        if 'X-Clarification-Parent' in request.headers:
+            raise Denied('clarification_extension_unsupported')
+        device = request['device']
+        conv = request.headers.get('X-Conversation', '')
+        key = request.headers.get('Idempotency-Key', '')
+        store.own(device, conv)
+        upload_started = time.monotonic()
+        data = await request.read()
+        validate_audio(data)
+        upload_ms = (time.monotonic()-upload_started)*1000
+        existing = store.db.execute('SELECT id FROM turns WHERE device=? AND request=?', (device, key)).fetchone()
+        if not existing and tasks:
+            raise Conflict('voice_worker_busy')
+        turn = store.admit(device, conv, key, hashlib.sha256(data).hexdigest())
         if not existing:
-            clip=media/(turn+'.wav');clip.touch(mode=0o600,exist_ok=False);clip.write_bytes(data)
-            task=asyncio.create_task(execute(device,turn,clip,time.monotonic(),upload_ms,request.headers.get('X-Audio-Chunks')=='sentence-mp3-v1'))
-            tasks[turn]=task
-            task.add_done_callback(lambda done, d=device, t=turn, c=clip: released(d,t,c,done))
-        return web.json_response({'turn':turn},status=202)
+            clip = media / f'{turn}.wav'
+            clip.touch(mode=0o600, exist_ok=False)
+            clip.write_bytes(data)
+            task = asyncio.create_task(execute(device, turn, clip, time.monotonic(), upload_ms,
+                                              request.headers.get('X-Audio-Chunks') == 'sentence-mp3-v1'))
+            tasks[turn] = task
+            task.add_done_callback(lambda done: released(device, turn, clip, done))
+        return web.json_response({'turn': turn}, status=202)
+
+    def result_audio(result):
+        result['audio'] = result['state'] == 'done' and (media / (result['id']+'.mp3')).is_file()
+        return result
+
     async def poll(request):
-        turn=request.match_info['turn'];result=store.get(request['device'],turn)
-        result['audio']=result['state']=='done' and (media/(turn+'.mp3')).is_file()
-        stream=streams.get(turn)
-        if stream is not None and result['state'] in ('speaking','done'):
-            after=request.headers.get('X-Audio-After')
+        turn = request.match_info['turn']
+        result = result_audio(store.get(request['device'], turn))
+        stream = streams.get(turn)
+        if stream is not None and result['state'] in ('speaking', 'done'):
+            after = request.headers.get('X-Audio-After')
             if after is not None:
-                if len(after)>2 or not after.isdecimal() or not stream['after'] <= int(after) <= stream['count']:
+                if len(after) > 2 or not after.isdecimal() or not stream['after'] <= int(after) <= stream['count']:
                     raise Denied('audio_sequence_denied')
-                stream['after']=int(after)
-            result['audio_chunks']={'count':stream['count'],'complete':stream['complete']}
-        metric=store.db.execute('SELECT route,timings FROM response_metrics WHERE turn=?',(turn,)).fetchone()
-        if metric:result['timings']={**json.loads(metric['timings']),'route':metric['route']}
-        if turn in confirmations: result['confirmation']=confirmations[turn][2]
+                stream['after'] = int(after)
+            result['audio_chunks'] = {'count': stream['count'], 'complete': stream['complete']}
+        metric = store.db.execute('SELECT route,timings FROM response_metrics WHERE turn=?', (turn,)).fetchone()
+        if metric:
+            result['timings'] = {**json.loads(metric['timings']), 'route': metric['route']}
         return web.json_response(result)
-    async def confirmation(request):
-        value=await body(request,['conversation','nonce','action_hash','accept'])
-        turn=request.match_info['turn'];device=request['device'];store.get(device,turn)
-        pending=confirmations.get(turn)
-        if pending is None or not isinstance(value['accept'],bool): raise Denied('confirmation_unavailable')
-        owner,binding,envelope,future=pending
-        if owner!=device or any(value[k]!=envelope[k] for k in ('conversation','nonce','action_hash')) or future.done(): raise Denied('confirmation_binding_denied')
-        store.claim(device,turn,value['nonce'],binding,time.time())
-        future.set_result(value['accept'])
-        return web.json_response({'accepted':value['accept']})
+
     async def lookup(request):
-        # Read-only, authenticated device ownership; never admits or dispatches.
-        result=store.by_request(request['device'],request.match_info['request'])
-        result['audio']=result['state']=='done' and (media/(result['id']+'.mp3')).is_file()
-        return web.json_response(result)
+        return web.json_response(result_audio(store.by_request(request['device'], request.match_info['request'])))
+
     async def audio(request):
-        turn=request.match_info['turn'];row=store.get(request['device'],turn)
-        path=media/(turn+'.mp3')
-        if row['state']!='done' or not path.is_file():raise Denied('not_found')
-        return web.Response(body=path.read_bytes(),content_type='audio/mpeg')
-    async def chunk_audio(request):
-        turn=request.match_info['turn'];row=store.get(request['device'],turn)
-        seq=request.match_info['seq'];stream=streams.get(turn)
-        if not seq.isdecimal() or len(seq)>2 or stream is None or not 0<=int(seq)<stream['count'] or row['state'] not in ('speaking','done'):
+        turn = request.match_info['turn']
+        row = store.get(request['device'], turn)
+        path = media / f'{turn}.mp3'
+        if row['state'] != 'done' or not path.is_file():
             raise Denied('not_found')
-        path=media/(turn+'.'+str(int(seq))+'.mp3')
-        if not path.is_file():raise Denied('not_found')
-        return web.Response(body=path.read_bytes(),content_type='audio/mpeg')
+        return web.Response(body=path.read_bytes(), content_type='audio/mpeg')
+
+    async def chunk_audio(request):
+        turn = request.match_info['turn']
+        row = store.get(request['device'], turn)
+        seq, stream = request.match_info['seq'], streams.get(turn)
+        if not seq.isdecimal() or len(seq) > 2 or stream is None or not 0 <= int(seq) < stream['count'] or row['state'] not in ('speaking', 'done'):
+            raise Denied('not_found')
+        path = media / f'{turn}.{int(seq)}.mp3'
+        if not path.is_file():
+            raise Denied('not_found')
+        return web.Response(body=path.read_bytes(), content_type='audio/mpeg')
+
     async def cancel(request):
-        await body(request,[])
-        # Discard output; no retry/undo. Wake unconfirmed actions without dispatch.
-        turn=request.match_info['turn'];result=store.cancel(request['device'],turn,dispatch_pending=turn in dispatching)
-        pending=confirmations.get(turn)
-        if pending and not pending[3].done(): pending[3].set_result(False)
-        task=tasks.get(turn)
-        if task is not None and not task.cancelling(): task.cancel()
+        await empty_body(request)
+        turn = request.match_info['turn']
+        result = store.cancel(request['device'], turn, agent_pending=turn in reasoning)
+        task = tasks.get(turn)
+        if task is not None and not task.cancelling():
+            task.cancel()
         return web.json_response(result)
+
     async def cleanup(app):
-        pending=list(tasks.values())
+        pending = list(tasks.values())
         for task in pending:
-            if not task.cancelling(): task.cancel()
-        await asyncio.gather(*pending,return_exceptions=True)
-        if getattr(adapter, 'backend', None) == 'acp':
+            if not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if hasattr(adapter, 'close'):
             await adapter.close()
         if hasattr(adapter, '_warm_voice'):
             await adapter._warm_voice.close()
+
     app.on_cleanup.append(cleanup)
-    from .diagnostics import install as install_diagnostics
-    install_diagnostics(app,store.path.parent)
-    app.router.add_get('/v1/health',health);app.router.add_post('/v1/conversations',conversation)
-    app.router.add_get('/v1/requests/{request}',lookup)
-    app.router.add_post('/v1/turns',submit);app.router.add_get('/v1/turns/{turn}',poll)
-    app.router.add_get('/v1/turns/{turn}/audio',audio);app.router.add_post('/v1/turns/{turn}/cancel',cancel)
-    app.router.add_post('/v1/turns/{turn}/confirmation',confirmation)
-    app.router.add_get('/v1/turns/{turn}/audio/{seq}',chunk_audio)
+    from .diagnostics import install
+    install(app, store.path.parent)
+    app.router.add_get('/v1/health', health)
+    app.router.add_post('/v1/conversations', conversation)
+    app.router.add_get('/v1/requests/{request}', lookup)
+    app.router.add_post('/v1/turns', submit)
+    app.router.add_get('/v1/turns/{turn}', poll)
+    app.router.add_get('/v1/turns/{turn}/audio', audio)
+    app.router.add_get('/v1/turns/{turn}/audio/{seq}', chunk_audio)
+    app.router.add_post('/v1/turns/{turn}/cancel', cancel)
     return app
 
-def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
-    p.add_argument('--hermes-source',type=Path,required=True)
-    p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
-    p.add_argument('--backend',choices=('acp',),default='acp',
-                   help='ACP-only reasoning; requires reviewed dedicated Sarah profile')
-    p.add_argument('--enable-research',action='store_true',help='Scoped Tavily/explicit Exa, Gmail GET/search and conversation-only drafts')
-    args=p.parse_args();store=Store(args.db);store.recover()
-    from .acp_runtime import create_runtime
-    adapter=create_runtime(store,args.hermes_source,args.backend)
-    tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
-    tls.load_cert_chain(args.cert,args.key)
-    from .ha import HADispatcher
-    from .siyuan import SiYuanDispatcher
-    from .calendar import CalendarDispatcher
-    from .tvtime import TVTimeDispatcher
-    from .web_mail import ResearchDispatcher
-    research=ResearchDispatcher.from_env() if args.enable_research else None
-    web.run_app(make_app(store,adapter,HADispatcher.from_env(),SiYuanDispatcher.from_env(),CalendarDispatcher.from_env(),TVTimeDispatcher.from_env(),research),host=args.bind,port=args.port,ssl_context=tls,access_log=None)
 
-if __name__=='__main__':main()
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--db', type=Path, required=True)
+    parser.add_argument('--cert')
+    parser.add_argument('--key')
+    parser.add_argument('--http', action='store_true', help='Explicit loopback HTTP behind a trusted TLS proxy')
+    parser.add_argument('--bind', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=8787)
+    args = parser.parse_args(argv)
+    if args.http:
+        try:
+            loopback = ipaddress.ip_address(args.bind).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            parser.error('--http requires a literal loopback bind address')
+        if args.cert or args.key:
+            parser.error('--http cannot be combined with TLS certificate/key options')
+    elif not args.cert or not args.key:
+        parser.error('--cert and --key are required unless --http is explicitly selected')
+    return args
+
+
+def main():
+    args = parse_args()
+    store = Store(args.db)
+    store.recover()
+    from .acp_runtime import create_runtime
+    adapter = create_runtime(store)
+    tls = None
+    if not args.http:
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
+        tls.load_cert_chain(args.cert, args.key)
+    web.run_app(make_app(store, adapter), host=args.bind, port=args.port, ssl_context=tls, access_log=None)
+
+
+if __name__ == '__main__':
+    main()

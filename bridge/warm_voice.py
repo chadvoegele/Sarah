@@ -86,7 +86,7 @@ def sentence_chunks(text):
     for m in re.finditer(r'[.!?]+[\"\u201d\u2019\')\]]*(?=\s+|$)', text):
         end = m.end()
         prefix = text[start:end]
-        token = prefix.split()[-1].strip('\"\u201d\u2019\')\]').lower()
+        token = prefix.split()[-1].strip('\"\u201d\u2019\')]').lower()
         if token.endswith('.') and (re.search(r'(?:\b[a-z]\.)+$', token) or token in {
                 'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'st.',
                 'vs.', 'etc.', 'e.g.', 'i.e.', 'a.m.', 'p.m.', 'no.', 'fig.'}):

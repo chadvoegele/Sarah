@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from bridge import runtime
+from bridge.warm_voice import WarmVoice
 
 
 class SpeechFormat(unittest.IsolatedAsyncioTestCase):
@@ -33,40 +34,15 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime.speech_text(text), text)
         self.assertEqual(runtime.speech_text(r'Literal \* and `a*b*c` and `#42`.'), 'Literal * and a*b*c and #42.')
 
-    async def test_server_display_and_history_keep_original_provider_answer(self):
-        from test_siyuan import Notes, DOC
-        case = Notes('test_natural_notebooks_search_read_then_ha')
-        await case.asyncSetUp()
-        seen = []
-        async def process(*args, input=None, **kwargs):
-            if input is not None:
-                seen.append(input.decode())
-            Path(args[-1]).write_bytes(b'test encoded audio')
-        async def speak(text, path):
-            await runtime.VoiceRuntime.speak(case.adapter, text, path)
-        try:
-            case.prose = '## Oven\n- **GE Café:** `CTC912P2NS1`, **$100.50**.'
-            case.calls = [('sy_read', {'document_id': DOC})]
-            case.adapter.speak = speak
-            with patch.object(runtime, '_tts_process', process):
-                row = await case.submit()
-                self.assertEqual(row['detail'], case.prose)
-                self.assertEqual(seen, ['Oven\nGE Café: CTC912P2NS1, one hundred dollars and fifty cents.'])
-                case.calls = []
-                await case.submit('followup')
-                self.assertIn({'role': 'assistant', 'content': case.prose}, case.wire[-1]['input'])
-            self.assertEqual(case.body, 'Original body')
-        finally:
-            await case.asyncTearDown()
-
     async def test_only_synthesis_input_changes(self):
         original = '## Appliances\n- **Bosch:** `SHP78CM6N`, **$23,501.77**.'
         seen = []
-        async def process(*args, input=None, **kwargs):
-            if input is not None:
-                seen.append(input.decode())
+        async def synth(worker, text, output):
+            seen.append(text)
+            output.write_bytes(b'synthetic wav')
+        async def encode(*args, **kwargs):
             Path(args[-1]).write_bytes(b'test encoded audio')
-        with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', process):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(WarmVoice, 'synthesize', synth), patch.object(runtime, '_tts_process', encode):
             await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original, Path(tmp)/'out.mp3')
         self.assertEqual(seen, ['Appliances\nBosch: SHP78CM6N, twenty three thousand five hundred one dollars and seventy seven cents.'])
         self.assertEqual(original, '## Appliances\n- **Bosch:** `SHP78CM6N`, **$23,501.77**.')
@@ -90,10 +66,11 @@ class SpeechFormat(unittest.IsolatedAsyncioTestCase):
         for original, expected in cases.items():
             with self.subTest(original=original):
                 seen = []
-                async def process(*args, input=None, **kwargs):
-                    if input is not None:
-                        seen.append(input.decode())
+                async def synth(worker, text, output):
+                    seen.append(text)
+                    output.write_bytes(b'synthetic wav')
+                async def encode(*args, **kwargs):
                     Path(args[-1]).write_bytes(b'test encoded audio')
-                with tempfile.TemporaryDirectory() as tmp, patch.object(runtime, '_tts_process', process):
+                with tempfile.TemporaryDirectory() as tmp, patch.object(WarmVoice, 'synthesize', synth), patch.object(runtime, '_tts_process', encode):
                     await runtime.VoiceRuntime.__new__(runtime.VoiceRuntime).speak(original, Path(tmp)/'out.mp3')
                 self.assertEqual(seen, [expected])

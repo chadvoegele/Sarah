@@ -27,7 +27,7 @@ class HTTP(AioHTTPTestCase):
   self.assertEqual((self.root/'diagnostics').stat().st_mode&0o777,0o700);self.assertEqual((self.root/'diagnostics/reports.sqlite3').stat().st_mode&0o777,0o600)
   self.assertEqual(self.s.db.execute('select count(*) from turns').fetchone()[0],0)
  async def test_rejection_before_storage(self):
-  for k,v in [('rawToken','secret'),('phase','https://secret'),('serverError','private transcript'),('httpStatus',True),('audioNext',33),('requestHash','RAW_ID'),('schema',1.0),('requestLength',-1),('chunkInFlight','false'),('appVersion',{'secret':'audio'})]:
+  for k,v in [('rawToken','secret'),('phase','https://secret.example.invalid'),('serverError','private transcript'),('httpStatus',True),('audioNext',33),('requestHash','RAW_ID'),('schema',1.0),('requestLength',-1),('chunkInFlight','false'),('appVersion',{'secret':'audio'})]:
    p=payload();p[k]=v;r=await self.client.post('/v1/diagnostics',json=p,headers=self.auth());self.assertEqual(r.status,400,(k,await r.text()))
   self.assertFalse((self.root/'diagnostics').exists())
   r=await self.client.post('/v1/diagnostics',data=b'x'*8193,headers={**self.auth(),'Content-Type':'application/json'});self.assertEqual(r.status,413)

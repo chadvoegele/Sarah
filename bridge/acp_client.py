@@ -1,7 +1,4 @@
-"""Bounded ACP v1 stdio transport, adapted from friend's acp_client.py.
-
-Only existing Hermes ACP. No shell, client filesystem/terminal, or permission grants.
-"""
+"""Bounded ACP v1 JSON-RPC client for trusted Unix sockets or stdio agents."""
 import asyncio
 import contextlib
 import hashlib
@@ -9,16 +6,16 @@ import json
 import math
 import os
 import signal
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
 class ACPError(RuntimeError):
-    """Local reason codes only; never forward raw agent errors/payloads."""
+    """Local reason codes only; never expose agent errors or protocol payloads."""
 
 
 async def settle(task):
+    """Finish owned cleanup even when cancellation is repeated."""
     cancelled = False
     while not task.done():
         try:
@@ -34,28 +31,38 @@ async def settle(task):
 @dataclass(frozen=True)
 class ACPConfig:
     cwd: str
-    command: tuple[str, ...] = (sys.executable, '-B', '-m', 'bridge.acp_launcher')
+    socket: str = ''
+    command: tuple[str, ...] = ()
     timeout: float = 120
 
     def __post_init__(self):
         if not Path(self.cwd).is_absolute() or '\0' in self.cwd:
-            raise ValueError('acp_absolute_cwd_required')
-        if self.command != (sys.executable, '-B', '-m', 'bridge.acp_launcher'):
-            raise ValueError('acp_dedicated_sarah_command_required')
+            raise ValueError('SARAH_ACP_CWD must be an absolute agent-side directory')
+        if bool(self.socket) == bool(self.command):
+            raise ValueError('Set exactly one of SARAH_ACP_SOCKET or SARAH_ACP_COMMAND')
+        if self.socket and (not Path(self.socket).is_absolute() or '\0' in self.socket):
+            raise ValueError('SARAH_ACP_SOCKET must be an absolute Unix socket path')
+        if (not isinstance(self.command, tuple) or
+                any(not isinstance(arg, str) or not arg or '\0' in arg for arg in self.command)):
+            raise ValueError('SARAH_ACP_COMMAND must be a nonempty JSON argv array')
         if not math.isfinite(self.timeout) or not 1 <= self.timeout <= 600:
-            raise ValueError('acp_invalid_timeout')
+            raise ValueError('SARAH_ACP_TIMEOUT_SECONDS must be between 1 and 600')
+
+    @classmethod
+    def from_env(cls):
+        raw = os.getenv('SARAH_ACP_COMMAND', '')
+        argv = json.loads(raw) if raw else []
+        if not isinstance(argv, list):
+            raise ValueError('SARAH_ACP_COMMAND must be a JSON argv array (no shell)')
+        return cls(cwd=os.getenv('SARAH_ACP_CWD', ''),
+                   socket=os.getenv('SARAH_ACP_SOCKET', ''), command=tuple(argv),
+                   timeout=float(os.getenv('SARAH_ACP_TIMEOUT_SECONDS', '120')))
 
     @property
     def identity(self):
-        from .acp_policy import identity
-        source = Path('/opt/hermes-agent')
-        installed = {f: hashlib.sha256((source/f).read_bytes()).hexdigest() for f in
-                     ('acp_adapter/server.py', 'acp_adapter/session.py', 'run_agent.py',
-                      'agent/agent_init.py', 'agent/tool_executor.py', 'model_tools.py',
-                      'tools/registry.py', 'toolsets.py', 'agent/conversation_loop.py',
-                      'agent/agent_runtime_helpers.py', 'hermes_cli/runtime_provider.py',
-                      'hermes_cli/auth.py', 'agent/credential_pool.py')}
-        return hashlib.sha256(json.dumps([self.cwd, self.command, identity(), installed], sort_keys=True).encode()).hexdigest()
+        # Do not store argv or environment secrets in the session-binding table.
+        value = json.dumps(['generic-acp-v2', self.cwd, self.socket, self.command], separators=(',', ':'))
+        return hashlib.sha256(value.encode()).hexdigest()
 
 
 class ACPClient:
@@ -66,24 +73,23 @@ class ACPClient:
 
     def __init__(self, reader, writer, process=None):
         self.reader, self.writer, self.process = reader, writer, process
-        self.sequence = self.total_bytes = self.frames = 0
+        self.sequence = 0
+        self.total_bytes = self.frames = 0
         self.session_id = None
         self.collecting = False
         self.parts = []
         self.answer_chars = 0
-        self.dispatch = None
-        self.turn_nonce = None
-        self.dispatch_count = 0
+        self.startup_info = None
 
     @classmethod
     async def connect(cls, config):
-        # No inherited bridge/admin/provider secrets or HERMES_HOME overrides.
-        # Preserve public calendar schema timezone, not arbitrary environment.
-        from .calendar import ZONE
-        env = {'HOME': str(Path.home()), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
-               'R1_TIMEZONE': ZONE}
+        if config.socket:
+            reader, writer = await asyncio.open_unix_connection(config.socket, limit=cls.LINE_BYTES)
+            return cls(reader, writer)
+        # Administrator-selected argv, never model input, never a shell.
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('SARAH_', 'R1_'))}
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-            *config.command, cwd=str(Path(__file__).resolve().parents[1]), env=env,
+            *config.command, cwd=config.cwd, env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, limit=cls.LINE_BYTES,
             start_new_session=True))
@@ -135,28 +141,24 @@ class ACPClient:
                 raise ACPError('acp_request_failed')
             if not isinstance(message.get('result'), dict):
                 raise ACPError('acp_invalid_result')
-            return message['result']
+            result = message['result']
+            if method in ('session/new', 'session/load'):
+                metadata = result.get('_meta')
+                pi = metadata.get('piAcp') if isinstance(metadata, dict) else None
+                startup = pi.get('startupInfo') if isinstance(pi, dict) else None
+                self.startup_info = startup if isinstance(startup, str) else None
+            return result
 
     async def handle_agent(self, message):
+        method = message['method']
         if 'id' in message:
-            if message['method'] == '_sarah/dispatch':
-                from .acp_policy import identity, validate
-                p = message.get('params')
-                if (not self.collecting or self.dispatch is None or not isinstance(p, dict)
-                        or set(p) != {'sessionId', 'policy', 'name', 'arguments', 'nonce'}
-                        or not self.turn_nonce or p.get('nonce') != self.turn_nonce
-                        or p['sessionId'] != self.session_id or p['policy'] != identity()):
-                    raise ACPError('acp_dispatch_binding_denied')
-                validate(p['name'], p['arguments'])
-                self.dispatch_count += 1
-                outcome = await self.dispatch(p['name'], p['arguments'])
-                await self.send({'id': message['id'], 'result': outcome})
-            elif message['method'] == 'session/request_permission':
+            if method == 'session/request_permission':
                 await self.send({'id': message['id'], 'result': {'outcome': {'outcome': 'cancelled'}}})
             else:
+                # We advertise no filesystem/terminal/delegated execution support.
                 await self.send({'id': message['id'], 'error': {'code': -32601, 'message': 'Unsupported client method'}})
             return
-        if message['method'] != 'session/update' or not self.collecting:
+        if method != 'session/update' or not self.collecting:
             return
         params = message.get('params')
         if not isinstance(params, dict) or params.get('sessionId') != self.session_id:
@@ -165,13 +167,22 @@ class ACPClient:
         if not isinstance(update, dict):
             raise ACPError('acp_invalid_update')
         if update.get('sessionUpdate') != 'agent_message_chunk':
-            return  # No thoughts, tool output, usage, or history replay spoken.
+            return  # Never speak thoughts, tool results, usage or command metadata.
+        metadata = update.get('_meta')
+        pi = metadata.get('piAcp') if isinstance(metadata, dict) else None
+        if isinstance(pi, dict) and 'notify' in pi:
+            return  # pi extension/UI notifications are not assistant answers.
         content = update.get('content')
         if not isinstance(content, dict) or content.get('type') != 'text':
             return
         text = content.get('text')
         if not isinstance(text, str):
             raise ACPError('acp_invalid_text')
+        if text == self.startup_info:
+            # pi-acp advertises this exact prelude in session/new metadata but
+            # may deliver it only after the first prompt has already started.
+            self.startup_info = None
+            return
         self.answer_chars += len(text)
         if self.answer_chars > self.ANSWER_CHARS:
             raise ACPError('acp_answer_limit')
@@ -181,7 +192,7 @@ class ACPClient:
         result = await self.request('initialize', {
             'protocolVersion': 1, 'clientCapabilities': {},
             'clientInfo': {'name': 'sarah', 'version': '1'}})
-        if result.get('protocolVersion') != 1:
+        if type(result.get('protocolVersion')) is not int or result['protocolVersion'] != 1:
             raise ACPError('acp_version_mismatch')
         return result.get('agentCapabilities') or {}
 
@@ -190,7 +201,6 @@ class ACPClient:
         self.session_id = session_id
         self.parts = []
         self.answer_chars = 0
-        self.dispatch_count = 0
         self.collecting = True
         try:
             result = await self.request('session/prompt', {
@@ -214,6 +224,7 @@ class ACPClient:
             async with asyncio.timeout(1):
                 await self.writer.wait_closed()
         if self.process is not None:
+            # Own only the spawned agent's process group, never a shared daemon.
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.process.pid, signal.SIGTERM)
             try:

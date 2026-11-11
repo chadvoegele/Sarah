@@ -1,40 +1,42 @@
-# Build and setup
+# Bridge setup (operator review only)
 
-## Native client
+These examples are not deployment approval. Do not create/rotate keys, install on a device, contact a live agent/provider or modify a production database as part of source validation.
 
-Requires Qt 5.15 development packages for Core, Gui, Qml, Quick, Multimedia and Network, a C++17 compiler, CMake 3.16+, and Lomiri.Components 1.3 at runtime. Ubuntu Touch ARM64 framework is `ubuntu-touch-24.04-1.x` as specified by `clickable.yaml` and `manifest.json`.
+## Local service
 
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 2
-cmake --install build --prefix "$PWD/package"
-```
+1. Install Python dependencies from `requirements.txt`. Use a separate Kokoro environment with `requirements-tts.txt`, its native dependencies, an existing approved model/voice bundle and FFmpeg. Models are not acquired at runtime.
+2. Configure a separately managed ACP v1 socket agent, or a trusted executable argv in `SARAH_ACP_COMMAND`. Its tools and provider configuration are outside Sarah.
+3. Arrange an existing private state directory and existing private device-token file. Run the following only when explicitly authorized, with paths supplied by the operator:
 
-Use an appropriate Ubuntu Touch ARM64 SDK/Clickable 8.10+ environment for a device package; a normal host build is not a device-compatible package. `clickable build` is the conventional SDK build entry point. No package upload or device installation is automatic. Metadata still uses the generic local package namespace `hermes-touch-voice.local`; choose a publisher-controlled namespace and maintainer contact before publishing. Keep C++ application identity, QML applicationName, package metadata, confinement and private-data paths consistent when changing it. Manifest version 0.2.6 is retained source metadata, not proof of a public release. CMake's 0.1.0 project version is likewise historical.
+   ```sh
+   umask 077
+   python -m bridge.provision_device --db /srv/sarah-state/state.db \
+     --device android --token-file /etc/sarah/device.token
+   ```
 
-Optional native probes are retained as C++ source. They require Qt test/runtime libraries, local fixtures and isolated HOME. Historical shell harnesses depended on a private SDK/device layout and are deliberately omitted rather than presented as portable scripts. Native probes are not automatically exercised by pytest.
+   The file must contain exactly 40–256 printable ASCII bytes with **no whitespace or trailing newline**. The token is hashed. Re-provisioning the same token is idempotent; a different, reassigned or revoked token fails without rotation. There is no admin HTTP provisioning route and no command here creates a token.
+4. Start with TLS, or explicitly loopback HTTP behind a reviewed TLS proxy:
 
-## Bridge
+   ```sh
+   python -m bridge.server --db /srv/sarah-state/state.db \
+     --http --bind 127.0.0.1 --port 8789
+   ```
 
-Use a dedicated unprivileged account and private directory; do not run a public listener as root. Python dependencies are in `requirements.txt`. `requirements-dev.txt` adds pytest. Supply an independently installed, compatible Hermes source tree and server-side authorized provider credentials for your saved global Hermes default. This repository does not include Hermes or its credentials. Verify internal API compatibility before enabling runtime; no tested Hermes release constraint is available.
+   The ACP and speech environment settings must already be present. See `config/bridge.env.example`. This command is illustrative; validation uses disposable peers instead.
+5. Pair Android with the HTTPS origin and that existing device token over a trusted channel. Use normal hostname verification and trusted/explicit CA validation, never an insecure TLS override.
 
-Obtain Whisper model assets explicitly into `R1_WHISPER_MODELS` (default `.build/whisper-models`); the runtime uses `local_files_only=True`. Obtain independently licensed Kokoro ONNX/voice assets, install `kokoro-onnx`, `onnxruntime`, `numpy`, `soundfile` in `R1_KOKORO_ROOT/venv`, and put `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `R1_KOKORO_ROOT` (default `.build/kokoro-audition`). This optional TTS environment is invoked using its Python with `-I`; OS `ffmpeg` with libmp3lame is needed. Model/dependency versions and redistribution rights require separate validation; no assets are bundled.
+## Docker/proxy assets
 
-Provision locally (creates credentials: never commit or share output files):
+The root Dockerfile packages the root `bridge/`, not the old `server/` tree. It installs speech dependencies, explicitly downloads Whisper/Kokoro assets at **build time**, verifies the Kokoro release-file SHA-256 values, and runs as unprivileged UID 1000. It includes upstream MIT and dependency notices. The base image, OS and transitive dependency versions still require an operator supply-chain review; this is not a hermetic/reproducible build claim.
 
-```sh
-umask 077
-python -m bridge.prepare --state .state --origin https://companion.example.invalid:8787 --device example-device
-```
+`docker-entrypoint.sh` uses umask 077, verifies/provisions the existing token from `/run/secrets/sarah_api_key`, and starts the bridge with `/var/lib/sarah/state.db`. State must be writable/private for UID 1000. The token must be readable by that UID and not publicly readable. Mismatched/revoked tokens stop startup.
 
-Replace that reserved origin with your own hostname. Generate/provision a TLS certificate and private key outside source control whose SAN matches that hostname. For a private CA, put the CA certificate (not private key) into the app's private data directory as `server-ca.pem`. Normal hostname and peer verification remain enabled. Transfer only the generated device settings securely into the app private data directory as `settings.json`, or enter origin/device token in the setup UI. Keep file mode 0600 and directory mode 0700. Never supply Codex or HA credentials to the app.
+`compose.example.yaml` is a Linux host-networking example. Its listener is loopback-only; no bridge port is published. Replace `/srv/sarah-state`, `/srv/acp-socket`, `/etc/sarah/device.token` and agent workspace with operator-reviewed paths. The socket directory must permit UID 1000 to connect. Mount only the intended socket/state; do not mount user homes, password stores, Docker sockets or integration/provider secrets into the bridge. The example uses read-only rootfs, private temporary scratch, dropped capabilities and no-new-privileges. Stdio agents are not installed in this image; provide your own reviewed image/executable if using that transport.
 
-```sh
-python -m bridge.server --db .state/state.db --cert .state/server-ca.pem --key .state/server.key --hermes-source /opt/hermes-agent --backend acp --bind 127.0.0.1 --port 8787
-```
+`config/Caddyfile.example` shows TLS termination to loopback. Use a real hostname/certificate configuration. Preserve Authorization, refuse large uploads and avoid request-body/token logging. The proxy must reach the same host loopback as the bridge. Do not weaken the application to `--http --bind 0.0.0.0` to work around networking problems.
 
-Those are explicit generic paths. The server requires real local TLS and Hermes inputs; this command was not run against accounts/services during preparation. Loopback is the default; expose to devices only through an authenticated, appropriately firewalled TLS path. See configuration/security before enabling integrations. No systemd units are included because inherited ones were deployment-specific; use your service manager with private environment files, explicit paths, restrictive umask, no unnecessary privilege and a single bridge process.
+## Existing state
 
-## Optional power helper
+Back up state before any approved upgrade. Startup makes only additive schema changes and marks interrupted turns uncertain; it does not delete or import legacy history, clear revocation or mutate the agent database. No legacy migration command exists. Keep the old history for read-only lookup and explicitly create a new conversation. Do not manually mark an uncertain binding ready to force a retry.
 
-See `power/README.md`. No helper service is installed automatically.
+This change has not built/deployed a Docker image, installed an APK, probed private services or exercised physical audio. Use the synthetic verification procedure first and obtain separate authorization for live validation.
